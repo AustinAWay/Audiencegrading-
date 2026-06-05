@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nichefit"
+version = "1.0.0"
+description = "Score how well an X (Twitter) account's audience fits a niche, rating each follower with Claude Haiku."
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["twitter", "x", "audience", "scoring", "claude", "anthropic", "apify", "fastapi"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+dependencies = [
+    "fastapi>=0.110,<0.116",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.26",
+    "anthropic>=0.40",
+    "python-dotenv>=1.0",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+nichefit = "nichefit.__main__:main"
+
+[project.urls]
+Documentation = "https://github.com/your-org/nichefit/tree/main/docs"
+Repository = "https://github.com/your-org/nichefit"
+Issues = "https://github.com/your-org/nichefit/issues"
+
+# --------------------------------------------------------------------------- #
+# Build — flat package layout (the `nichefit/` directory at the repo root),
+# bundling the web UI asset into the wheel.
+# --------------------------------------------------------------------------- #
+[tool.hatch.build.targets.wheel]
+packages = ["nichefit"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"nichefit/web" = "nichefit/web"
+
+# --------------------------------------------------------------------------- #
+# Tooling
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = ["B008"]  # FastAPI uses callables in argument defaults by design
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+# Long lines in these are sample data, rubric band text, and few-shot prompt
+# text where line breaks would hurt readability.
+"nichefit/config.py" = ["E501"]
+"nichefit/data/mock.py" = ["E501"]
+"nichefit/scoring/prompts.py" = ["E501"]

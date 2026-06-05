@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NicheFit — score an X audience for a niche</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { background:#0b1020; }
+    .glass { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 1s linear infinite; }
+  </style>
+</head>
+<body class="text-slate-100">
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const TIER_COLORS = { A:"#22c55e", B:"#84cc16", C:"#f59e0b", D:"#ef4444" };
+const fmt = (n) => (n||0).toLocaleString();
+const usd = (n) => "$" + (n||0).toFixed(n < 1 ? 4 : 2);
+
+// ----- small SVG widgets --------------------------------------------------
+function Gauge({ value }) {
+  const r = 80, c = Math.PI * r, pct = Math.max(0, Math.min(100, value)) / 100;
+  const color = value >= 80 ? "#22c55e" : value >= 60 ? "#84cc16" : value >= 40 ? "#f59e0b" : "#ef4444";
+  return (
+    <div className="relative flex items-center justify-center" style={{width:220,height:130}}>
+      <svg width="220" height="130" viewBox="0 0 220 130">
+        <path d="M20 120 A 80 80 0 0 1 200 120" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="16" strokeLinecap="round"/>
+        <path d="M20 120 A 80 80 0 0 1 200 120" fill="none" stroke={color} strokeWidth="16"
+          strokeLinecap="round" strokeDasharray={`${c*pct} ${c}`}/>
+      </svg>
+      <div className="absolute bottom-0 flex flex-col items-center">
+        <span className="text-5xl font-bold" style={{color}}>{Math.round(value)}</span>
+        <span className="text-xs text-slate-400">audience score / 100</span>
+      </div>
+    </div>
+  );
+}
+
+function Donut({ tiers }) {
+  const total = Object.values(tiers).reduce((a,b)=>a+b,0) || 1;
+  let acc = 0; const r = 60, c = 2*Math.PI*r;
+  const segs = ["A","B","C","D"].map(t => {
+    const frac = (tiers[t]||0)/total;
+    const seg = <circle key={t} cx="80" cy="80" r={r} fill="none" stroke={TIER_COLORS[t]} strokeWidth="22"
+      strokeDasharray={`${c*frac} ${c}`} strokeDashoffset={-c*acc} transform="rotate(-90 80 80)"/>;
+    acc += frac; return seg;
+  });
+  return (
+    <div className="flex items-center gap-5">
+      <svg width="160" height="160">{segs}
+        <text x="80" y="86" textAnchor="middle" className="fill-white" fontSize="22" fontWeight="bold">{total}</text>
+      </svg>
+      <div className="space-y-1 text-sm">
+        {["A","B","C","D"].map(t=>(
+          <div key={t} className="flex items-center gap-2">
+            <span className="inline-block w-3 h-3 rounded-sm" style={{background:TIER_COLORS[t]}}></span>
+            <span className="font-medium">Tier {t}</span>
+            <span className="text-slate-400">{tiers[t]||0} ({Math.round((tiers[t]||0)/total*100)}%)</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CriterionBar({ c }) {
+  const pct = (c.avg / c.max) * 100;
+  return (
+    <div>
+      <div className="flex justify-between text-sm mb-1">
+        <span>{c.label}</span>
+        <span className="text-slate-400">{c.avg} / {c.max}</span>
+      </div>
+      <div className="h-2.5 rounded-full bg-white/10 overflow-hidden">
+        <div className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-fuchsia-400" style={{width:pct+"%"}}/>
+      </div>
+    </div>
+  );
+}
+
+function TierBadge({ tier }) {
+  return <span className="px-2 py-0.5 rounded text-xs font-bold text-black" style={{background:TIER_COLORS[tier]}}>{tier}</span>;
+}
+
+// ----- main app -----------------------------------------------------------
+function App() {
+  const [cfg, setCfg] = useState(null);
+  const [handle, setHandle] = useState("");
+  const [niche, setNiche] = useState("");
+  const [custom, setCustom] = useState("");
+  const [sample, setSample] = useState(200);
+  const [concurrency, setConcurrency] = useState(8);
+  const [webLookup, setWebLookup] = useState(false);
+  const [forceRefresh, setForceRefresh] = useState(false);
+  const [est, setEst] = useState(null);
+  const [stage, setStage] = useState("form"); // form | confirm | running | done
+  const [progress, setProgress] = useState(null);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const pollRef = useRef(null);
+
+  useEffect(() => {
+    fetch("/api/config").then(r=>r.json()).then(c=>{
+      setCfg(c);
+      setNiche(c.niches[0]);
+      setSample(c.mock.apify ? 200 : c.default_sample_size);
+      setConcurrency(c.default_concurrency);
+    });
+    return () => clearInterval(pollRef.current);
+  }, []);
+
+  const activeNiche = () => niche === "__custom__" ? custom.trim() : niche;
+
+  async function getEstimate() {
+    setError(null);
+    if (!handle.trim()) { setError("Paste an X link or @handle."); return; }
+    if (!activeNiche()) { setError("Pick or type a niche."); return; }
+    const r = await fetch("/api/estimate", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ handle, niche: activeNiche(), sample_size: +sample, web_lookup: webLookup, force_refresh: forceRefresh })});
+    if (!r.ok) { setError((await r.json()).detail || "Estimate failed."); return; }
+    setEst(await r.json());
+    setStage("confirm");
+  }
+
+  async function startRun() {
+    setError(null); setResult(null); setProgress(null); setStage("running");
+    const r = await fetch("/api/analyze", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ handle, niche: activeNiche(), sample_size:+sample, concurrency:+concurrency, web_lookup:webLookup, force_refresh:forceRefresh })});
+    if (!r.ok) { setError((await r.json()).detail || "Failed to start."); setStage("confirm"); return; }
+    const { job_id } = await r.json();
+    pollRef.current = setInterval(async () => {
+      const p = await (await fetch("/api/progress/"+job_id)).json();
+      setProgress(p);
+      if (p.status === "done") { clearInterval(pollRef.current); setResult(p.result); setStage("done"); }
+      if (p.status === "error") { clearInterval(pollRef.current); setError(p.error); setStage("confirm"); }
+    }, 900);
+  }
+
+  function reset() { setStage("form"); setResult(null); setProgress(null); setEst(null); setError(null); }
+
+  if (!cfg) return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
+
+  const mock = cfg.mock.apify || cfg.mock.anthropic;
+
+  return (
+    <div className="min-h-screen max-w-5xl mx-auto px-5 py-8">
+      <header className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Niche<span className="text-fuchsia-400">Fit</span></h1>
+          <p className="text-slate-400 text-sm">Score how well an X account's audience fits a niche — follower by follower, with Claude Haiku.</p>
+        </div>
+        <span className="text-xs text-slate-500">model: {cfg.model}</span>
+      </header>
+
+      {mock && (
+        <div className="glass rounded-lg p-3 mb-5 text-sm text-amber-300">
+          ⚠️ Mock mode active{cfg.mock.apify ? " — Apify (bundled sample followers)" : ""}{cfg.mock.anthropic ? " — Haiku (heuristic scoring)" : ""}.
+          Add the missing key(s) to <code>.env</code> and restart for live data + real scores.
+        </div>
+      )}
+
+      {error && <div className="glass rounded-lg p-3 mb-5 text-sm text-red-300">⚠️ {error}</div>}
+
+      {/* FORM */}
+      {stage === "form" && (
+        <div className="glass rounded-2xl p-6 space-y-5">
+          <div>
+            <label className="block text-sm mb-1 text-slate-300">X account link or @handle</label>
+            <input value={handle} onChange={e=>setHandle(e.target.value)} placeholder="https://x.com/naval  or  @naval"
+              className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+          </div>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm mb-1 text-slate-300">Niche</label>
+              <select value={niche} onChange={e=>setNiche(e.target.value)}
+                className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400">
+                {cfg.niches.map(n=><option key={n} value={n}>{n}</option>)}
+                <option value="__custom__">＋ custom niche…</option>
+              </select>
+              {niche === "__custom__" && (
+                <input value={custom} onChange={e=>setCustom(e.target.value)} placeholder="e.g. longevity biotech"
+                  className="mt-2 w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm mb-1 text-slate-300">Sample size (followers to score)</label>
+              <input type="number" min="1" max={cfg.hard_cap} value={sample} onChange={e=>setSample(e.target.value)}
+                className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+              <p className="text-xs text-slate-500 mt-1">Default {fmt(cfg.default_sample_size)}. Start small (~200) for your first run.</p>
+            </div>
+          </div>
+          <div className="grid md:grid-cols-3 gap-4 items-end">
+            <div>
+              <label className="block text-sm mb-1 text-slate-300">Concurrency</label>
+              <input type="number" min="1" max="32" value={concurrency} onChange={e=>setConcurrency(e.target.value)}
+                className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-300 py-3">
+              <input type="checkbox" checked={webLookup} onChange={e=>setWebLookup(e.target.checked)} className="w-4 h-4"/>
+              Web lookup for top accounts
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 py-3">
+              <input type="checkbox" checked={forceRefresh} onChange={e=>setForceRefresh(e.target.checked)} className="w-4 h-4"/>
+              Force refresh (ignore cache)
+            </label>
+          </div>
+          <button onClick={getEstimate}
+            className="w-full bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg py-3 font-semibold text-black">
+            Estimate cost →
+          </button>
+        </div>
+      )}
+
+      {/* CONFIRM */}
+      {stage === "confirm" && est && (
+        <div className="glass rounded-2xl p-6 space-y-4">
+          <h2 className="text-xl font-semibold">Confirm run</h2>
+          <p className="text-slate-300">Analyzing <span className="font-mono text-fuchsia-300">@{est.handle}</span> for the
+            <span className="text-fuchsia-300"> "{activeNiche()}"</span> niche.</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Stat label="Followers to scrape" value={fmt(est.to_scrape)} sub={est.cached_followers?`${fmt(est.cached_followers)} cached`:""}/>
+            <Stat label="Followers to score" value={fmt(est.to_score)} sub={est.cached_scores?`${fmt(est.cached_scores)} cached`:""}/>
+            <Stat label="Apify cost" value={usd(est.apify_cost)} sub={est.apify_mock?"mock — free":""}/>
+            <Stat label="Haiku cost" value={usd(est.haiku_cost)} sub={est.anthropic_mock?"mock — free":""}/>
+          </div>
+          {est.web_lookups>0 && <p className="text-sm text-slate-400">+ up to {est.web_lookups} web lookups ({usd(est.web_cost)})</p>}
+          <div className="flex items-center justify-between border-t border-white/10 pt-4">
+            <span className="text-slate-300">Estimated total</span>
+            <span className="text-2xl font-bold text-fuchsia-300">{usd(est.total_cost)}</span>
+          </div>
+          <div className="flex gap-3">
+            <button onClick={reset} className="px-5 py-3 rounded-lg border border-white/15 hover:bg-white/5">← Back</button>
+            <button onClick={startRun} className="flex-1 bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg py-3 font-semibold text-black">
+              Confirm & analyze
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* RUNNING */}
+      {stage === "running" && (
+        <div className="glass rounded-2xl p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="w-5 h-5 border-2 border-fuchsia-400 border-t-transparent rounded-full spin"></div>
+            <h2 className="text-xl font-semibold">{progress?.phase || "Starting…"}</h2>
+          </div>
+          {progress && (
+            <>
+              <div className="h-3 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-indigo-400 to-fuchsia-400 transition-all"
+                  style={{width: (progress.total? (progress.scored/progress.total*100):5)+"%"}}/>
+              </div>
+              <div className="flex justify-between text-sm text-slate-400">
+                <span>{fmt(progress.scored)} / {fmt(progress.total)} scored {progress.skipped?`· ${progress.skipped} skipped`:""}</span>
+                <span>spent this run: <span className="text-fuchsia-300">{usd(progress.spend.total)}</span></span>
+              </div>
+              <div className="bg-black/40 rounded-lg p-3 h-40 overflow-auto font-mono text-xs text-slate-400 space-y-0.5">
+                {(progress.logs||[]).map((l,i)=><div key={i}>{l}</div>)}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* DONE */}
+      {stage === "done" && result && (
+        <div className="space-y-5">
+          <div className="grid md:grid-cols-3 gap-5">
+            <div className="glass rounded-2xl p-6 flex flex-col items-center justify-center">
+              <Gauge value={result.audience_score}/>
+              <div className="mt-3 text-center text-sm text-slate-400">
+                influence-weighted: <span className="text-slate-200 font-semibold">{result.weighted_score}</span> / 100
+              </div>
+            </div>
+            <div className="glass rounded-2xl p-6 md:col-span-2">
+              <h3 className="font-semibold mb-3 text-slate-300">Criterion breakdown (avg)</h3>
+              <div className="space-y-3">
+                {Object.values(result.criteria_avg).map((c,i)=><CriterionBar key={i} c={c}/>)}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-5">
+            <div className="glass rounded-2xl p-6">
+              <h3 className="font-semibold mb-3 text-slate-300">Tier distribution</h3>
+              <Donut tiers={result.tiers}/>
+            </div>
+            <div className="glass rounded-2xl p-6 md:col-span-2">
+              <h3 className="font-semibold mb-2 text-slate-300">Summary</h3>
+              <p className="text-slate-200 leading-relaxed">{result.summary}</p>
+              <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-400">
+                <span>scored: {fmt(result.scored)}</span>
+                <span>avg confidence: {result.avg_confidence}</span>
+                <span>skipped: {fmt(result.skipped)}</span>
+                <span>spent: {usd(result.spend.total)} (apify {usd(result.spend.apify)} · haiku {usd(result.spend.anthropic)})</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="glass rounded-2xl p-6">
+            <h3 className="font-semibold mb-4 text-slate-300">Top 25 highest-value followers</h3>
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="text-slate-400 text-left border-b border-white/10">
+                  <tr>
+                    <th className="py-2 pr-3">#</th><th className="pr-3">Handle</th><th className="pr-3">Followers</th>
+                    <th className="pr-2">Total</th><th className="pr-2">Tier</th>
+                    <th className="pr-2" title="Niche relevance / 35">Rel</th>
+                    <th className="pr-2" title="Influence / 25">Inf</th>
+                    <th className="pr-2" title="Authority / 20">Aut</th>
+                    <th className="pr-2" title="Engagement / 10">Eng</th>
+                    <th className="pr-2" title="Authenticity / 10">Acc</th>
+                    <th>Why</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.top_followers.map((f,i)=>(
+                    <tr key={i} className="border-b border-white/5 hover:bg-white/5">
+                      <td className="py-2 pr-3 text-slate-500">{i+1}</td>
+                      <td className="pr-3">
+                        <a className="text-fuchsia-300 hover:underline" target="_blank" href={"https://x.com/"+f.screen_name}>@{f.screen_name}</a>
+                      </td>
+                      <td className="pr-3 text-slate-400">{fmt(f.followers_count)}</td>
+                      <td className="pr-2 font-semibold">{f.total}</td>
+                      <td className="pr-2"><TierBadge tier={f.tier}/></td>
+                      <td className="pr-2 text-slate-400">{f.niche_relevance}</td>
+                      <td className="pr-2 text-slate-400">{f.influence_reach}</td>
+                      <td className="pr-2 text-slate-400">{f.authority}</td>
+                      <td className="pr-2 text-slate-400">{f.engagement_quality}</td>
+                      <td className="pr-2 text-slate-400">{f.authenticity}</td>
+                      <td className="text-slate-400 max-w-xs">{f.reasoning}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <button onClick={reset} className="bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg px-6 py-3 font-semibold text-black">
+            ↺ New analysis
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, sub }) {
+  return (
+    <div className="bg-black/30 rounded-lg p-3">
+      <div className="text-xs text-slate-400">{label}</div>
+      <div className="text-lg font-semibold">{value}</div>
+      {sub && <div className="text-[11px] text-slate-500">{sub}</div>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>

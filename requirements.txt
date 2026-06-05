@@ -1,0 +1,9 @@
+# Runtime dependencies. (pyproject.toml is the canonical source; this file is a
+# convenience for `pip install -r requirements.txt`. For dev tooling use
+# `pip install -e ".[dev]"`.)
+fastapi>=0.110,<0.116
+uvicorn[standard]>=0.27
+httpx>=0.26
+anthropic>=0.40
+python-dotenv>=1.0
+pydantic>=2.5
