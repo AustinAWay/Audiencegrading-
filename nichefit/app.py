@@ -66,6 +66,11 @@ class AnalyzeReq(EstimateReq):
     concurrency: int = config.DEFAULT_CONCURRENCY
 
 
+class PersonReq(BaseModel):
+    handle: str
+    niche: str
+
+
 def _clamp_sizes(sample_size: int, pool_size: int) -> tuple[int, int]:
     """Sample is bounded by the hard cap; the pool is at least the sample size."""
     sample = max(1, min(sample_size, config.HARD_CAP_SAMPLE_SIZE))
@@ -153,6 +158,19 @@ async def post_analyze(req: AnalyzeReq):
     jid = engine.new_job()
     asyncio.create_task(engine.run_analysis(jid, req.handle, req.niche, _settings_from(req)))
     return {"job_id": jid}
+
+
+@app.post("/api/person")
+async def post_person(req: PersonReq):
+    """Analyze one specific person's influence/fit for a niche (synchronous)."""
+    if not req.niche.strip():
+        raise HTTPException(400, "Pick or enter a niche.")
+    try:
+        return await engine.analyze_person(req.handle, req.niche)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # surface a clean error to the client
+        raise HTTPException(500, str(e)) from e
 
 
 @app.get("/api/progress/{job_id}")

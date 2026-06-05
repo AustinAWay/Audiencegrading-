@@ -63,6 +63,18 @@ async def test_full_run_in_mock_mode():
     assert result["audience_score"] <= result["real_audience_score"]
     if result["bot_rate"] > 0:
         assert result["audience_score"] < result["real_audience_score"]
+    # the full ranked roster is returned (everyone graded), sorted by grade desc
+    roster = result["followers"]
+    assert len(roster) == result["analyzed"]
+    assert all(roster[i]["total"] >= roster[i + 1]["total"] for i in range(len(roster) - 1))
+
+
+async def test_analyze_person_returns_a_grade():
+    res = await engine.analyze_person("@sama", "AI / machine learning")
+    assert res["handle"] == "sama"
+    assert 0 <= res["total"] <= 100
+    assert res["tier"] in ("A", "B", "C", "D")
+    assert "niche_relevance" in res
 
 
 async def test_top_selection_picks_highest_reach():

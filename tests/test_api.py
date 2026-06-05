@@ -40,3 +40,16 @@ def test_index_is_served():
 
 def test_unknown_job_is_404():
     assert client.get("/api/progress/does-not-exist").status_code == 404
+
+
+def test_person_endpoint_grades_one_person():
+    r = client.post("/api/person", json={"handle": "@sama", "niche": "AI / machine learning"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["handle"] == "sama"
+    assert 0 <= body["total"] <= 100
+    assert body["tier"] in ("A", "B", "C", "D")
+
+
+def test_person_endpoint_rejects_empty_handle():
+    assert client.post("/api/person", json={"handle": "  ", "niche": "x"}).status_code == 400

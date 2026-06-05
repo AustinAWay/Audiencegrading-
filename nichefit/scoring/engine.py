@@ -207,6 +207,10 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
         agg["analyzed"] = len(real_results)
         agg["selection"] = settings.selection
         agg["researched"] = research
+        # The full ranked roster (every analyzed real follower), highest grade first.
+        agg["followers"] = sorted(
+            real_results, key=lambda s: (s["total"], s.get("followers_count", 0)), reverse=True
+        )
 
         # The mean over the real (non-bot) accounts.
         agg["real_audience_score"] = agg["audience_score"]
@@ -254,3 +258,39 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
         job["status"] = "error"
         job["error"] = str(e)
         _log(jid, f"ERROR: {e}")
+
+
+# Standalone person check: no account stats are available, so tell the model to
+# judge on research and not penalise the activity/authenticity criteria.
+PERSON_NOTE = (
+    "This is a standalone person-influence check — only their handle, bio, and web "
+    "research are available, with NO account activity statistics. Judge Niche "
+    "Relevance, Real-World Influence, and Authority from the research; for Activity "
+    "and Authenticity, score neutrally (mid-range) and lower your confidence rather "
+    "than penalising for missing data."
+)
+
+
+async def analyze_person(raw_input: str, niche: str) -> dict:
+    """Analyze one specific person's influence/fit for a niche (research + score).
+
+    Does not scrape an account's followers — it researches the individual and
+    scores them directly. Cheap (one research + one scoring call).
+    """
+    handle = apify.parse_handle(raw_input)
+    if not handle:
+        raise ValueError("Could not parse an X handle from the input.")
+    scorer = Scorer(niche, concurrency=1)
+    follower = {"screen_name": handle, "name": handle}
+    web_ctx = await scorer.web_context(follower)
+    score = await scorer.score_one(follower, web_context=web_ctx, note=PERSON_NOTE)
+    if score is None:
+        raise RuntimeError("Could not score this person — try again.")
+    result = dict(score)
+    result["handle"] = handle
+    result["niche"] = niche
+    result["research"] = web_ctx or ""
+    result["researched"] = web_ctx is not None
+    result["spend"] = round(scorer.spend_usd, 4)
+    result["mock"] = {"apify": config.APIFY_MOCK, "anthropic": config.ANTHROPIC_MOCK}
+    return result

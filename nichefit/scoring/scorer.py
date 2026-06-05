@@ -208,13 +208,15 @@ class Scorer:
         text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
         return _extract_json(text)
 
-    async def score_one(self, f: dict, web_context: str | None = None) -> dict | None:
+    async def score_one(
+        self, f: dict, web_context: str | None = None, note: str | None = None
+    ) -> dict | None:
         """Score a single follower. Returns None if it fails after all retries."""
         if self.client is None:
             return heuristic_score(f, self.niche)
 
         system = prompts.system_prompt(self.niche)
-        user = prompts.user_prompt(f, web_context)
+        user = prompts.user_prompt(f, web_context, note=note)
         async with self.sem:
             for attempt in range(config.MAX_RETRIES_PER_FOLLOWER):
                 try:

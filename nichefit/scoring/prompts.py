@@ -119,7 +119,7 @@ def follower_to_xml(f: dict) -> str:
     )
 
 
-def user_prompt(f: dict, web_context: str | None = None) -> str:
+def user_prompt(f: dict, web_context: str | None = None, note: str | None = None) -> str:
     """Build the user-turn prompt: few-shot examples + the follower to score."""
     parts = [
         "Here are two worked examples of the expected output.",
@@ -139,5 +139,7 @@ def user_prompt(f: dict, web_context: str | None = None) -> str:
             "\nWeb research about this person (use it to judge real-world influence "
             f"and authority):\n<web_context>{web_context}</web_context>"
         )
+    if note:
+        parts.append(f"\n{note}")
     parts.append("\nReason briefly, then output the strict JSON object.")
     return "\n".join(parts)

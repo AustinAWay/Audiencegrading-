@@ -108,6 +108,12 @@ function App() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const pollRef = useRef(null);
+  const [tab, setTab] = useState("audience");      // audience | person
+  const [showAdv, setShowAdv] = useState(false);
+  const [sortBy, setSortBy] = useState("grade");   // grade | followers
+  const [query, setQuery] = useState("");
+  const [personResult, setPersonResult] = useState(null);
+  const [personBusy, setPersonBusy] = useState(false);
 
   useEffect(() => {
     fetch("/api/config").then(r=>r.json()).then(c=>{
@@ -148,6 +154,20 @@ function App() {
     }, 900);
   }
 
+  async function analyzePerson() {
+    setError(null); setPersonResult(null);
+    if (!handle.trim()) { setError("Enter an X link or @handle."); return; }
+    if (!activeNiche()) { setError("Pick or type an area / niche."); return; }
+    setPersonBusy(true);
+    try {
+      const r = await fetch("/api/person", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ handle, niche: activeNiche() })});
+      if (!r.ok) { setError((await r.json()).detail || "Analysis failed."); return; }
+      setPersonResult(await r.json());
+    } catch (e) { setError("Analysis failed: " + e.message); }
+    finally { setPersonBusy(false); }
+  }
+
   function reset() { setStage("form"); setResult(null); setProgress(null); setEst(null); setError(null); }
 
   if (!cfg) return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
@@ -183,78 +203,113 @@ function App() {
 
       {/* FORM */}
       {stage === "form" && (
-        <div className="glass rounded-2xl p-6 space-y-5">
-          <div>
-            <label className="block text-sm mb-1 text-slate-300">X account link or @handle</label>
-            <input value={handle} onChange={e=>setHandle(e.target.value)} placeholder="https://x.com/naval  or  @naval"
-              className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
-          </div>
-          <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm mb-1 text-slate-300">Niche</label>
-              <select value={niche} onChange={e=>setNiche(e.target.value)}
-                className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400">
-                {cfg.niches.map(n=><option key={n} value={n}>{n}</option>)}
-                <option value="__custom__">＋ custom niche…</option>
-              </select>
-              {niche === "__custom__" && (
-                <input value={custom} onChange={e=>setCustom(e.target.value)} placeholder="e.g. longevity biotech"
-                  className="mt-2 w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
-              )}
-            </div>
-            <div>
-              <label className="block text-sm mb-1 text-slate-300">Sample size (real followers to deeply analyze)</label>
-              <input type="number" min="1" max={cfg.hard_cap} value={sample} onChange={e=>setSample(e.target.value)}
-                className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
-              <p className="text-xs text-slate-500 mt-1">How many real (non-bot) followers get deep analysis / research.</p>
-            </div>
-          </div>
-          <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm mb-1 text-slate-300">Scan depth (followers to scrape)</label>
-              <input type="number" min="200" max={cfg.hard_cap} value={scanDepth} onChange={e=>setScanDepth(e.target.value)}
-                className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
-              <p className="text-xs text-amber-300/80 mt-1">⚠️ The X API returns followers <b>newest-first</b>, and recent followers are mostly bots. To reach real / high-reach followers who followed you earlier, set this at or above your <b>total follower count</b>.</p>
-            </div>
-            <div>
-              <label className="block text-sm mb-1 text-slate-300">Concurrency</label>
-              <input type="number" min="1" max="32" value={concurrency} onChange={e=>setConcurrency(e.target.value)}
-                className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
-            </div>
-          </div>
-          <div className="grid md:grid-cols-3 gap-4 items-end">
-            <label className="flex items-center gap-2 text-sm text-slate-300 py-3">
-              <input type="checkbox" checked={webLookup} onChange={e=>setWebLookup(e.target.checked)} className="w-4 h-4"/>
-              Research each follower (web)
-            </label>
-            <label className="flex items-center gap-2 text-sm text-slate-300 py-3">
-              <input type="checkbox" checked={skipBots} onChange={e=>setSkipBots(e.target.checked)} className="w-4 h-4"/>
-              Skip bots (free filter)
-            </label>
-            <label className="flex items-center gap-2 text-sm text-slate-300 py-3">
-              <input type="checkbox" checked={forceRefresh} onChange={e=>setForceRefresh(e.target.checked)} className="w-4 h-4"/>
-              Force refresh (ignore cache)
-            </label>
-          </div>
-          <button onClick={()=>getEstimate("custom")}
-            className="w-full bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg py-3 font-semibold text-black">
-            Estimate cost →
-          </button>
-          <div className="grid md:grid-cols-2 gap-3">
-            <button onClick={()=>getEstimate("full")}
-              className="rounded-lg py-3 font-semibold border border-fuchsia-400/40 bg-fuchsia-400/10 hover:bg-fuchsia-400/20 transition text-fuchsia-200">
-              ⚡ Full account (cheap estimate)
+        <div className="space-y-5">
+          {/* tab switch */}
+          <div className="flex gap-2">
+            <button onClick={()=>{setTab("audience");setError(null);}}
+              className={"px-4 py-2 rounded-lg text-sm font-medium transition " + (tab==="audience" ? "bg-fuchsia-500 text-black" : "border border-white/15 text-slate-300 hover:bg-white/5")}>
+              Audience analysis
             </button>
-            <button onClick={()=>getEstimate("top")}
-              className="rounded-lg py-3 font-semibold border border-indigo-400/40 bg-indigo-400/10 hover:bg-indigo-400/20 transition text-indigo-200">
-              ★ Top followers by reach (deep)
+            <button onClick={()=>{setTab("person");setError(null);}}
+              className={"px-4 py-2 rounded-lg text-sm font-medium transition " + (tab==="person" ? "bg-fuchsia-500 text-black" : "border border-white/15 text-slate-300 hover:bg-white/5")}>
+              Single person
             </button>
           </div>
-          <p className="text-xs text-slate-500">
-            Both scan your <b>{fmt(scanDepth)}</b> most-recent followers — set scan depth ≥ your total follower count to truly scan everyone.
-            <b> Full account</b>: random sample, measures the bot %, and the bot % lowers the overall score (no web research — cheap).
-            <b> Top followers</b>: ranks everyone scanned by their own follower count, then researches the top {/* sample */}~50 (who they are + recent posts) and scores them.
-          </p>
+
+          {/* AUDIENCE TAB */}
+          {tab === "audience" && (
+            <div className="glass rounded-2xl p-6 space-y-5">
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm mb-1 text-slate-300">X account link or @handle</label>
+                  <input value={handle} onChange={e=>setHandle(e.target.value)} placeholder="https://x.com/naval  or  @naval"
+                    className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                </div>
+                <NicheField {...{niche,setNiche,custom,setCustom,cfg}}/>
+              </div>
+
+              <div className="text-sm text-slate-400">Choose how to analyze the audience:</div>
+              <div className="grid md:grid-cols-2 gap-3">
+                <button onClick={()=>getEstimate("full")}
+                  className="text-left rounded-xl p-4 border border-fuchsia-400/40 bg-fuchsia-400/10 hover:bg-fuchsia-400/20 transition">
+                  <div className="font-semibold text-fuchsia-200">⚡ Full account (cheap)</div>
+                  <div className="text-xs text-slate-400 mt-1">Random sample of everyone scanned. Measures the bot % — which lowers the overall score. No web research.</div>
+                </button>
+                <button onClick={()=>getEstimate("top")}
+                  className="text-left rounded-xl p-4 border border-indigo-400/40 bg-indigo-400/10 hover:bg-indigo-400/20 transition">
+                  <div className="font-semibold text-indigo-200">★ Top followers (deep)</div>
+                  <div className="text-xs text-slate-400 mt-1">Ranks everyone scanned by their own follower count, then researches & grades the top ones.</div>
+                </button>
+              </div>
+
+              <div>
+                <button onClick={()=>setShowAdv(!showAdv)} className="text-xs text-slate-400 hover:text-slate-200">
+                  {showAdv ? "▾" : "▸"} Advanced / custom run
+                </button>
+                {showAdv && (
+                  <div className="mt-3 space-y-4 border-t border-white/10 pt-4">
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm mb-1 text-slate-300">Sample size (real followers to grade)</label>
+                        <input type="number" min="1" max={cfg.hard_cap} value={sample} onChange={e=>setSample(e.target.value)}
+                          className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                      </div>
+                      <div>
+                        <label className="block text-sm mb-1 text-slate-300">Scan depth (followers to scrape)</label>
+                        <input type="number" min="200" max={cfg.hard_cap} value={scanDepth} onChange={e=>setScanDepth(e.target.value)}
+                          className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                      </div>
+                    </div>
+                    <div className="grid md:grid-cols-3 gap-3 items-center">
+                      <div>
+                        <label className="block text-sm mb-1 text-slate-300">Concurrency</label>
+                        <input type="number" min="1" max="32" value={concurrency} onChange={e=>setConcurrency(e.target.value)}
+                          className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                      </div>
+                      <label className="flex items-center gap-2 text-sm text-slate-300 pt-5">
+                        <input type="checkbox" checked={webLookup} onChange={e=>setWebLookup(e.target.checked)} className="w-4 h-4"/> Research (web)
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-slate-300 pt-5">
+                        <input type="checkbox" checked={skipBots} onChange={e=>setSkipBots(e.target.checked)} className="w-4 h-4"/> Skip bots
+                      </label>
+                    </div>
+                    <label className="flex items-center gap-2 text-sm text-slate-300">
+                      <input type="checkbox" checked={forceRefresh} onChange={e=>setForceRefresh(e.target.checked)} className="w-4 h-4"/> Force refresh (ignore cache)
+                    </label>
+                    <button onClick={()=>getEstimate("custom")}
+                      className="w-full bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg py-3 font-semibold text-black">
+                      Estimate custom run →
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <p className="text-xs text-amber-300/70">⚠️ Scans your <b>{fmt(scanDepth)}</b> most-recent followers — raise “scan depth” in Advanced to ≥ your follower count to reach everyone (the API returns newest-first).</p>
+            </div>
+          )}
+
+          {/* SINGLE PERSON TAB */}
+          {tab === "person" && (
+            <div className="glass rounded-2xl p-6 space-y-4">
+              <div>
+                <h2 className="text-lg font-semibold">Analyze one person's influence</h2>
+                <p className="text-xs text-slate-400 mt-1">Enter anyone's handle and an area — we research who they are and grade their influence / fit for it. (This doesn't analyze their followers.)</p>
+              </div>
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm mb-1 text-slate-300">X link or @handle of the person</label>
+                  <input value={handle} onChange={e=>setHandle(e.target.value)} placeholder="@sama"
+                    className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                </div>
+                <NicheField {...{niche,setNiche,custom,setCustom,cfg,label:"Area / niche"}}/>
+              </div>
+              <button onClick={analyzePerson} disabled={personBusy}
+                className="w-full bg-fuchsia-500 hover:bg-fuchsia-400 disabled:opacity-50 transition rounded-lg py-3 font-semibold text-black">
+                {personBusy ? "Researching…" : "Analyze influence →"}
+              </button>
+              {personResult && <PersonCard r={personResult} cfg={cfg}/>}
+            </div>
+          )}
         </div>
       )}
 
@@ -371,44 +426,69 @@ function App() {
             </div>
           </div>
 
-          <div className="glass rounded-2xl p-6">
-            <h3 className="font-semibold mb-4 text-slate-300">Top 25 highest-value followers</h3>
-            <div className="overflow-auto">
-              <table className="w-full text-sm">
-                <thead className="text-slate-400 text-left border-b border-white/10">
-                  <tr>
-                    <th className="py-2 pr-3">#</th><th className="pr-3">Handle</th><th className="pr-3">Followers</th>
-                    <th className="pr-2">Total</th><th className="pr-2">Tier</th>
-                    <th className="pr-2" title="Niche relevance / 30">Rel</th>
-                    <th className="pr-2" title="Real-world influence / 35">Inf</th>
-                    <th className="pr-2" title="Authority / 20">Aut</th>
-                    <th className="pr-2" title="Content quality / 8">Con</th>
-                    <th className="pr-2" title="Authenticity / 7">Acc</th>
-                    <th>Why</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.top_followers.map((f,i)=>(
-                    <tr key={i} className="border-b border-white/5 hover:bg-white/5">
-                      <td className="py-2 pr-3 text-slate-500">{i+1}</td>
-                      <td className="pr-3">
-                        <a className="text-fuchsia-300 hover:underline" target="_blank" href={"https://x.com/"+f.screen_name}>@{f.screen_name}</a>
-                      </td>
-                      <td className="pr-3 text-slate-400">{fmt(f.followers_count)}</td>
-                      <td className="pr-2 font-semibold">{f.total}</td>
-                      <td className="pr-2"><TierBadge tier={f.tier}/></td>
-                      <td className="pr-2 text-slate-400">{f.niche_relevance}</td>
-                      <td className="pr-2 text-slate-400">{f.influence_reach}</td>
-                      <td className="pr-2 text-slate-400">{f.authority}</td>
-                      <td className="pr-2 text-slate-400">{f.engagement_quality}</td>
-                      <td className="pr-2 text-slate-400">{f.authenticity}</td>
-                      <td className="text-slate-400 max-w-xs">{f.reasoning}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          {(() => {
+            const all = result.followers || result.top_followers || [];
+            const q = query.trim().toLowerCase();
+            const filtered = q
+              ? all.filter(f => (f.screen_name||"").toLowerCase().includes(q) || (f.name||"").toLowerCase().includes(q))
+              : all;
+            const sorted = [...filtered].sort((a,b)=>
+              sortBy === "followers"
+                ? (b.followers_count||0) - (a.followers_count||0)
+                : (b.total||0) - (a.total||0) || (b.followers_count||0) - (a.followers_count||0)
+            );
+            return (
+              <div className="glass rounded-2xl p-6">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                  <h3 className="font-semibold text-slate-300">All graded followers <span className="text-xs text-slate-500">({sorted.length})</span></h3>
+                  <div className="flex items-center gap-2">
+                    <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="search handle / name"
+                      className="bg-black/30 rounded-lg px-3 py-1.5 text-sm outline-none border border-white/10 focus:border-fuchsia-400"/>
+                    <select value={sortBy} onChange={e=>setSortBy(e.target.value)}
+                      className="bg-black/30 rounded-lg px-3 py-1.5 text-sm outline-none border border-white/10 focus:border-fuchsia-400">
+                      <option value="grade">Sort by grade</option>
+                      <option value="followers">Sort by followers</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="overflow-auto max-h-[32rem]">
+                  <table className="w-full text-sm">
+                    <thead className="text-slate-400 text-left border-b border-white/10 sticky top-0 bg-[#0b1020]">
+                      <tr>
+                        <th className="py-2 pr-3">#</th><th className="pr-3">Handle</th><th className="pr-3">Followers</th>
+                        <th className="pr-2">Grade</th><th className="pr-2">Tier</th>
+                        <th className="pr-2" title="Niche relevance / 30">Rel</th>
+                        <th className="pr-2" title="Real-world influence / 35">Inf</th>
+                        <th className="pr-2" title="Authority / 20">Aut</th>
+                        <th className="pr-2" title="Activity / 8">Act</th>
+                        <th className="pr-2" title="Authenticity / 7">Acc</th>
+                        <th>Why</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sorted.map((f,i)=>(
+                        <tr key={i} className="border-b border-white/5 hover:bg-white/5">
+                          <td className="py-2 pr-3 text-slate-500">{i+1}</td>
+                          <td className="pr-3">
+                            <a className="text-fuchsia-300 hover:underline" target="_blank" href={"https://x.com/"+f.screen_name}>@{f.screen_name}</a>
+                          </td>
+                          <td className="pr-3 text-slate-400">{fmt(f.followers_count)}</td>
+                          <td className="pr-2 font-semibold">{f.total}</td>
+                          <td className="pr-2"><TierBadge tier={f.tier}/></td>
+                          <td className="pr-2 text-slate-400">{f.niche_relevance}</td>
+                          <td className="pr-2 text-slate-400">{f.influence_reach}</td>
+                          <td className="pr-2 text-slate-400">{f.authority}</td>
+                          <td className="pr-2 text-slate-400">{f.engagement_quality}</td>
+                          <td className="pr-2 text-slate-400">{f.authenticity}</td>
+                          <td className="text-slate-400 max-w-xs">{f.reasoning}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
 
           <button onClick={reset} className="bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg px-6 py-3 font-semibold text-black">
             ↺ New analysis
@@ -430,6 +510,49 @@ function Stat({ label, value, sub }) {
       <div className="text-xs text-slate-400">{label}</div>
       <div className="text-lg font-semibold">{value}</div>
       {sub && <div className="text-[11px] text-slate-500">{sub}</div>}
+    </div>
+  );
+}
+
+function NicheField({ niche, setNiche, custom, setCustom, cfg, label }) {
+  return (
+    <div>
+      <label className="block text-sm mb-1 text-slate-300">{label || "Niche"}</label>
+      <select value={niche} onChange={e=>setNiche(e.target.value)}
+        className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400">
+        {cfg.niches.map(n=><option key={n} value={n}>{n}</option>)}
+        <option value="__custom__">＋ custom…</option>
+      </select>
+      {niche === "__custom__" && (
+        <input value={custom} onChange={e=>setCustom(e.target.value)} placeholder="e.g. edtech, longevity biotech"
+          className="mt-2 w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+      )}
+    </div>
+  );
+}
+
+function PersonCard({ r, cfg }) {
+  const color = r.total >= 80 ? "#22c55e" : r.total >= 60 ? "#84cc16" : r.total >= 40 ? "#f59e0b" : "#ef4444";
+  return (
+    <div className="border-t border-white/10 pt-4 space-y-3">
+      <div className="flex items-center gap-3">
+        <div className="text-4xl font-bold" style={{color}}>{r.total}</div>
+        <div>
+          <div className="flex items-center gap-2">
+            <TierBadge tier={r.tier}/>
+            <a className="text-fuchsia-300 hover:underline" target="_blank" href={"https://x.com/"+r.handle}>@{r.handle}</a>
+          </div>
+          <div className="text-xs text-slate-400">influence / fit for "{r.niche}" · grade {r.total}/100</div>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {cfg.rubric.map((c,i)=><CriterionBar key={i} c={{label:c.label, max:c.max, avg:r[c.key]}}/>)}
+      </div>
+      <p className="text-sm text-slate-300"><b>Why:</b> {r.reasoning}</p>
+      {r.research && <p className="text-xs text-slate-400"><b>Research:</b> {r.research}</p>}
+      <div className="text-xs text-slate-500">
+        confidence {r.confidence}{r.mock && r.mock.anthropic ? " · mock (heuristic)" : ` · spent ${usd(r.spend)}`}
+      </div>
     </div>
   );
 }
