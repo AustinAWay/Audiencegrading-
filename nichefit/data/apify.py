@@ -163,3 +163,93 @@ async def fetch_followers(
 
     normalized = [n for n in (_normalize(i) for i in items) if n]
     return _dedupe(normalized)[:sample_size]
+
+
+async def _run_actor(client: httpx.AsyncClient, actor_id: str, run_input: dict,
+                     max_items: int) -> list[dict]:
+    """Start an actor, poll to completion, and return up to max_items dataset rows."""
+    token = config.APIFY_API_TOKEN
+    actor = actor_id.replace("/", "~")
+    r = await client.post(
+        f"{config.APIFY_BASE_URL}/acts/{actor}/runs?token={token}", json=run_input
+    )
+    r.raise_for_status()
+    run = r.json()["data"]
+    rid, did = run["id"], run["defaultDatasetId"]
+    status_url = f"{config.APIFY_BASE_URL}/actor-runs/{rid}?token={token}"
+    for _ in range(180):
+        await asyncio.sleep(2.0)
+        st = (await client.get(status_url)).json()["data"]["status"]
+        if st in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
+            if st != "SUCCEEDED":
+                raise RuntimeError(f"Apify run ended with status {st}")
+            break
+    else:
+        raise RuntimeError("Apify run timed out.")
+    ds = f"{config.APIFY_BASE_URL}/datasets/{did}/items?token={token}&clean=true&limit={max_items}"
+    resp = await client.get(ds)
+    resp.raise_for_status()
+    return resp.json()
+
+
+_FOLLOWER_COUNT_CACHE: dict[str, int] = {}
+
+
+async def fetch_follower_count(handle: str) -> int | None:
+    """Detect an account's total follower count (cached per process).
+
+    Used to "scan all followers" with an accurate cost — we read it off the
+    target's own profile (via the tweet scraper). Returns None in mock mode or if
+    the profile can't be fetched.
+    """
+    handle = parse_handle(handle)
+    if not handle or config.APIFY_MOCK:
+        return None
+    key = handle.lower()
+    if key in _FOLLOWER_COUNT_CACHE:
+        return _FOLLOWER_COUNT_CACHE[key]
+    profile = await fetch_profile_and_tweets(handle, max_tweets=2)
+    if not profile:
+        return None
+    count = int(profile.get("followers_count") or 0)
+    _FOLLOWER_COUNT_CACHE[key] = count
+    return count
+
+
+async def fetch_profile_and_tweets(handle: str, max_tweets: int | None = None) -> dict | None:
+    """Fetch one user's profile + recent tweets by handle.
+
+    The tweet objects embed the author's full profile, so one call gives us bio,
+    name, follower/activity counts, verification, AND recent tweet text. Returns
+    None when no public tweets/profile are found (private / empty / nonexistent).
+    Raises on an Apify transport/run error (so the caller can show a real error).
+    """
+    max_tweets = max_tweets or config.PERSON_TWEETS
+    handle = parse_handle(handle)
+    if config.APIFY_MOCK or not handle:
+        return None
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        items = await _run_actor(
+            client, config.APIFY_TWEET_ACTOR,
+            {"from": handle, "maxItems": max_tweets, "queryType": "Latest"},
+            max_tweets,
+        )
+    authored = [it for it in items if isinstance(it.get("author"), dict)]
+    if not authored:
+        return None
+    a = authored[0]["author"]
+    tweets = [it["text"].strip() for it in authored if it.get("text", "").strip()][:max_tweets]
+    return {
+        "screen_name": handle,
+        "name": a.get("name") or handle,
+        "description": a.get("description") or "",
+        "location": a.get("location") or "",
+        "url": a.get("url") or "",
+        "followers_count": int(a.get("followers") or 0),
+        "friends_count": int(a.get("following") or 0),
+        "statuses_count": int(a.get("statusesCount") or 0),
+        "favourites_count": int(a.get("favouritesCount") or 0),
+        "created_at": a.get("createdAt") or "",
+        "verified": bool(a.get("isBlueVerified") or a.get("isVerified")),
+        "tweets": tweets,
+    }

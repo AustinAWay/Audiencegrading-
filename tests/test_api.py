@@ -35,7 +35,7 @@ def test_estimate_rejects_unparseable_handle():
 def test_index_is_served():
     r = client.get("/")
     assert r.status_code == 200
-    assert "NicheFit" in r.text
+    assert "Audiencegrading" in r.text
 
 
 def test_unknown_job_is_404():
@@ -53,3 +53,13 @@ def test_person_endpoint_grades_one_person():
 
 def test_person_endpoint_rejects_empty_handle():
     assert client.post("/api/person", json={"handle": "  ", "niche": "x"}).status_code == 400
+
+
+def test_custom_mode_respects_selection():
+    # "continue" runs send mode=custom + selection=top to page down the reach list
+    r = client.post("/api/estimate", json={
+        "handle": "@naval", "niche": "tech / SaaS", "mode": "custom",
+        "selection": "top", "sample_size": 200, "force_refresh": True,
+    })
+    assert r.status_code == 200
+    assert r.json()["selection"] == "top"

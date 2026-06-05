@@ -3,66 +3,89 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NicheFit — score an X audience for a niche</title>
+  <title>Audiencegrading — score an X audience for a niche</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <style>
-    body { background:#0b1020; }
-    .glass { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .spin { animation: spin 1s linear infinite; }
+    :root{
+      --cream:#F4F1E8; --ink:#15140F; --muted:#6f6b62;
+      --purple:#6A4CF0; --lime:#C2F23D; --teal:#0E7A62;
+    }
+    *{ font-family:'Outfit',ui-sans-serif,system-ui,sans-serif; }
+    body{ background:var(--cream); color:var(--ink); }
+    .card{ background:#FFFFFF; border:1px solid #E7E2D5; border-radius:1.5rem; }
+    .card-teal{ background:var(--teal); color:#fff; border-radius:1.75rem; }
+    .card-purple{ background:var(--purple); color:#fff; border-radius:1.75rem; }
+    .soft{ background:#F8F5ED; border:1px solid #E7E2D5; border-radius:1rem; }
+    .inp{ background:#fff; border:1px solid #DED9CC; border-radius:.85rem; padding:.72rem 1rem;
+          width:100%; outline:none; color:var(--ink); font-size:1rem; font-weight:500; }
+    .inp:focus{ border-color:var(--purple); box-shadow:0 0 0 3px rgba(106,76,240,.15); }
+    .lbl{ display:block; font-size:.82rem; font-weight:600; margin-bottom:.35rem; color:#56524a; }
+    .btn{ border:none; border-radius:.9rem; padding:.85rem 1.25rem; font-weight:700; cursor:pointer;
+          font-size:1rem; transition:transform .05s ease, filter .15s ease; }
+    .btn:active{ transform:translateY(1px); }
+    .btn:disabled{ opacity:.5; cursor:default; }
+    .btn-purple{ background:var(--purple); color:#fff; }
+    .btn-purple:hover{ filter:brightness(1.08); }
+    .btn-lime{ background:var(--lime); color:#1c2b00; }
+    .btn-lime:hover{ filter:brightness(1.04); }
+    .btn-ink{ background:var(--ink); color:#fff; }
+    .btn-ink:hover{ filter:brightness(1.35); }
+    .btn-ghost{ background:transparent; border:1px solid #D8D3C5; color:var(--ink); }
+    .btn-ghost:hover{ background:#fff; }
+    .pill{ padding:.55rem 1.15rem; border-radius:999px; font-weight:600; font-size:.92rem;
+           cursor:pointer; border:1px solid #D8D3C5; background:transparent; color:#46433b; }
+    .pill-active{ background:var(--ink); color:#fff; border-color:var(--ink); }
+    @keyframes spin{ to{ transform:rotate(360deg); } }
+    .spin{ animation:spin 1s linear infinite; }
   </style>
 </head>
-<body class="text-slate-100">
+<body>
   <div id="root"></div>
   <script type="text/babel" data-presets="react">
 const { useState, useEffect, useRef } = React;
 
-const TIER_COLORS = { A:"#22c55e", B:"#84cc16", C:"#f59e0b", D:"#ef4444" };
+const INK = "#15140F", MUTED = "#6f6b62", PURPLE = "#6A4CF0", LIME = "#C2F23D", TEAL = "#0E7A62";
+const TIER_COLORS = { A:"#0E7A62", B:"#9BCC00", C:"#E8A317", D:"#E5484D" };
 const fmt = (n) => (n||0).toLocaleString();
 const usd = (n) => "$" + (n||0).toFixed(n < 1 ? 4 : 2);
+const scoreColor = (v) => v >= 80 ? "#0E7A62" : v >= 60 ? "#9BCC00" : v >= 40 ? "#E8A317" : "#E5484D";
 
-// ----- small SVG widgets --------------------------------------------------
-function Gauge({ value }) {
-  const r = 80, c = Math.PI * r, pct = Math.max(0, Math.min(100, value)) / 100;
-  const color = value >= 80 ? "#22c55e" : value >= 60 ? "#84cc16" : value >= 40 ? "#f59e0b" : "#ef4444";
+// ----- widgets ------------------------------------------------------------
+function BigScore({ value, label }) {
   return (
-    <div className="relative flex items-center justify-center" style={{width:220,height:130}}>
-      <svg width="220" height="130" viewBox="0 0 220 130">
-        <path d="M20 120 A 80 80 0 0 1 200 120" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="16" strokeLinecap="round"/>
-        <path d="M20 120 A 80 80 0 0 1 200 120" fill="none" stroke={color} strokeWidth="16"
-          strokeLinecap="round" strokeDasharray={`${c*pct} ${c}`}/>
-      </svg>
-      <div className="absolute bottom-0 flex flex-col items-center">
-        <span className="text-5xl font-bold" style={{color}}>{Math.round(value)}</span>
-        <span className="text-xs text-slate-400">audience score / 100</span>
-      </div>
+    <div className="flex flex-col items-center justify-center text-center">
+      <div style={{ fontSize:"6rem", lineHeight:1, fontWeight:900, color:LIME }}>{Math.round(value)}</div>
+      <div className="mt-1 text-sm" style={{ color:"rgba(255,255,255,.75)" }}>/ 100 · {label}</div>
     </div>
   );
 }
 
 function Donut({ tiers }) {
   const total = Object.values(tiers).reduce((a,b)=>a+b,0) || 1;
-  let acc = 0; const r = 60, c = 2*Math.PI*r;
+  let acc = 0; const r = 58, c = 2*Math.PI*r;
   const segs = ["A","B","C","D"].map(t => {
     const frac = (tiers[t]||0)/total;
-    const seg = <circle key={t} cx="80" cy="80" r={r} fill="none" stroke={TIER_COLORS[t]} strokeWidth="22"
-      strokeDasharray={`${c*frac} ${c}`} strokeDashoffset={-c*acc} transform="rotate(-90 80 80)"/>;
+    const seg = <circle key={t} cx="74" cy="74" r={r} fill="none" stroke={TIER_COLORS[t]} strokeWidth="20"
+      strokeDasharray={`${c*frac} ${c}`} strokeDashoffset={-c*acc} transform="rotate(-90 74 74)"/>;
     acc += frac; return seg;
   });
   return (
     <div className="flex items-center gap-5">
-      <svg width="160" height="160">{segs}
-        <text x="80" y="86" textAnchor="middle" className="fill-white" fontSize="22" fontWeight="bold">{total}</text>
+      <svg width="148" height="148">{segs}
+        <text x="74" y="80" textAnchor="middle" fill={INK} fontSize="22" fontWeight="800">{total}</text>
       </svg>
-      <div className="space-y-1 text-sm">
+      <div className="space-y-1.5 text-sm">
         {["A","B","C","D"].map(t=>(
           <div key={t} className="flex items-center gap-2">
             <span className="inline-block w-3 h-3 rounded-sm" style={{background:TIER_COLORS[t]}}></span>
-            <span className="font-medium">Tier {t}</span>
-            <span className="text-slate-400">{tiers[t]||0} ({Math.round((tiers[t]||0)/total*100)}%)</span>
+            <span className="font-semibold">Tier {t}</span>
+            <span style={{color:MUTED}}>{tiers[t]||0} ({Math.round((tiers[t]||0)/total*100)}%)</span>
           </div>
         ))}
       </div>
@@ -71,86 +94,256 @@ function Donut({ tiers }) {
 }
 
 function CriterionBar({ c }) {
-  const pct = (c.avg / c.max) * 100;
+  const pct = Math.max(0, Math.min(100, (c.avg / c.max) * 100));
   return (
     <div>
       <div className="flex justify-between text-sm mb-1">
-        <span>{c.label}</span>
-        <span className="text-slate-400">{c.avg} / {c.max}</span>
+        <span className="font-semibold">{c.label}</span>
+        <span style={{color:MUTED}}>{c.avg} / {c.max}</span>
       </div>
-      <div className="h-2.5 rounded-full bg-white/10 overflow-hidden">
-        <div className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-fuchsia-400" style={{width:pct+"%"}}/>
+      <div className="h-3 rounded-full overflow-hidden" style={{background:"#ECE7DA"}}>
+        <div className="h-full rounded-full" style={{width:pct+"%", background:TEAL}}/>
       </div>
     </div>
   );
 }
 
 function TierBadge({ tier }) {
-  return <span className="px-2 py-0.5 rounded text-xs font-bold text-black" style={{background:TIER_COLORS[tier]}}>{tier}</span>;
+  const onLime = tier === "B";
+  return <span className="px-2.5 py-0.5 rounded-md text-xs font-extrabold"
+    style={{background:TIER_COLORS[tier], color: onLime ? "#1c2b00" : "#fff"}}>{tier}</span>;
 }
 
-// ----- main app -----------------------------------------------------------
+function Stat({ label, value, sub }) {
+  return (
+    <div className="soft p-3">
+      <div className="text-xs" style={{color:MUTED}}>{label}</div>
+      <div className="text-lg font-extrabold">{value}</div>
+      {sub && <div className="text-[11px]" style={{color:"#9a9588"}}>{sub}</div>}
+    </div>
+  );
+}
+
+const PHASE_ORDER = ["Queued","Scraping followers","Filtering bots","Scoring followers","Writing summary","Done"];
+function phaseHint(phase) {
+  switch (phase) {
+    case "Scraping followers": return "Pulling the account's followers from X (the API returns them newest-first).";
+    case "Filtering bots": return "Dropping obvious fake / empty / inactive accounts for free — no AI calls.";
+    case "Scoring followers": return "Researching each real follower on the web, then grading them 0–100 on the rubric.";
+    case "Writing summary": return "Averaging the grades into the audience score and writing the summary.";
+    case "Done": return "Finished.";
+    default: return "Getting started…";
+  }
+}
+
+function Steps({ phase }) {
+  const steps = [
+    { label:"Scrape followers", ends:"Scraping followers" },
+    { label:"Filter bots", ends:"Filtering bots" },
+    { label:"Research & grade", ends:"Scoring followers" },
+    { label:"Summarize", ends:"Writing summary" },
+  ];
+  const cur = PHASE_ORDER.indexOf(phase);
+  return (
+    <div className="space-y-2.5">
+      {steps.map((s,i)=>{
+        const endIdx = PHASE_ORDER.indexOf(s.ends);
+        const done = cur > endIdx;
+        const active = cur === endIdx || (s.ends === "Scoring followers" && phase === "Scoring followers");
+        const bg = done ? TEAL : active ? PURPLE : "#E7E2D5";
+        const fg = (done||active) ? "#fff" : "#9a9588";
+        return (
+          <div key={i} className="flex items-center gap-3">
+            <span className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-extrabold" style={{background:bg, color:fg}}>{i+1}</span>
+            <span className="text-sm font-medium" style={{color: active ? INK : done ? "#56524a" : "#9a9588"}}>{s.label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function HowGrading({ cfg }) {
+  return (
+    <div className="soft p-4">
+      <div className="font-extrabold mb-2 text-sm">How grading works</div>
+      <ol className="text-sm space-y-1" style={{color:"#56524a"}}>
+        <li><b>1. Scrape</b> — pull followers from X (newest-first).</li>
+        <li><b>2. Bot filter</b> — drop obvious fake / inactive accounts for free.</li>
+        <li><b>3. Research &amp; grade</b> — look each real follower up on the web, then score 0–100 on the rubric.</li>
+        <li><b>4. Roll up</b> — average into the audience score, tiers, and the ranked roster.</li>
+      </ol>
+      <div className="mt-3 pt-2 border-t flex flex-wrap gap-x-3 gap-y-1 text-xs" style={{borderColor:"#E7E2D5", color:MUTED}}>
+        <span className="font-semibold" style={{color:INK}}>Rubric:</span>
+        {cfg.rubric.map((c,i)=><span key={i}>{c.label} <b style={{color:INK}}>/{c.max}</b></span>)}
+      </div>
+    </div>
+  );
+}
+
+function NicheField({ niche, setNiche, custom, setCustom, cfg, label }) {
+  return (
+    <div>
+      <label className="lbl">{label || "Niche"}</label>
+      <select value={niche} onChange={e=>setNiche(e.target.value)} className="inp">
+        {cfg.niches.map(n=><option key={n} value={n}>{n}</option>)}
+        <option value="__custom__">+ custom…</option>
+      </select>
+      {niche === "__custom__" && (
+        <input value={custom} onChange={e=>setCustom(e.target.value)} placeholder="e.g. edtech, longevity biotech"
+          className="inp mt-2"/>
+      )}
+    </div>
+  );
+}
+
+function PersonCard({ r, cfg }) {
+  return (
+    <div className="card-teal p-6 mt-2">
+      <div className="flex items-end gap-4">
+        <div style={{ fontSize:"3.5rem", lineHeight:1, fontWeight:900, color:LIME }}>{r.total}</div>
+        <div className="pb-1">
+          <div className="flex items-center gap-2">
+            <TierBadge tier={r.tier}/>
+            <a className="font-semibold hover:underline" target="_blank" href={"https://x.com/"+r.handle} style={{color:"#fff"}}>@{r.handle}</a>
+            {r.name && r.name !== r.handle && <span className="text-sm" style={{color:"rgba(255,255,255,.7)"}}>· {r.name}</span>}
+          </div>
+          <div className="text-sm" style={{color:"rgba(255,255,255,.7)"}}>
+            influence / fit for "{r.niche}"{r.tweet_count ? ` · ${r.tweet_count} recent tweets analyzed` : ""}
+          </div>
+        </div>
+      </div>
+      <div className="mt-5 space-y-3 rounded-2xl p-4" style={{background:"rgba(255,255,255,.08)"}}>
+        {cfg.rubric.map((c,i)=>(
+          <div key={i}>
+            <div className="flex justify-between text-sm mb-1" style={{color:"#fff"}}>
+              <span className="font-semibold">{c.label}</span><span style={{color:"rgba(255,255,255,.7)"}}>{r[c.key]} / {c.max}</span>
+            </div>
+            <div className="h-2.5 rounded-full overflow-hidden" style={{background:"rgba(255,255,255,.15)"}}>
+              <div className="h-full rounded-full" style={{width:Math.min(100,(r[c.key]/c.max*100))+"%", background:LIME}}/>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-4 text-sm" style={{color:"rgba(255,255,255,.92)"}}><b>Why:</b> {r.reasoning}</p>
+      {r.research && <p className="mt-2 text-xs" style={{color:"rgba(255,255,255,.7)"}}><b>Research:</b> {r.research}</p>}
+      <div className="mt-3 text-xs" style={{color:"rgba(255,255,255,.6)"}}>
+        confidence {r.confidence}{r.mock && r.mock.anthropic ? " · mock (heuristic)" : ` · spent ${usd(r.spend)}`}
+      </div>
+    </div>
+  );
+}
+
+// ----- app ----------------------------------------------------------------
 function App() {
   const [cfg, setCfg] = useState(null);
   const [handle, setHandle] = useState("");
   const [niche, setNiche] = useState("");
   const [custom, setCustom] = useState("");
   const [sample, setSample] = useState(100);
-  const [scanDepth, setScanDepth] = useState(3000);
+  const [scanDepth, setScanDepth] = useState(0);   // 0 = scan all followers (auto-detect count)
   const [concurrency, setConcurrency] = useState(8);
+  const [estimating, setEstimating] = useState(false);
   const [webLookup, setWebLookup] = useState(true);
   const [skipBots, setSkipBots] = useState(true);
   const [forceRefresh, setForceRefresh] = useState(false);
   const [mode, setMode] = useState("custom");
   const [est, setEst] = useState(null);
-  const [stage, setStage] = useState("form"); // form | confirm | running | done
+  const [stage, setStage] = useState("form");
   const [progress, setProgress] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const pollRef = useRef(null);
-  const [tab, setTab] = useState("audience");      // audience | person
+  const [tab, setTab] = useState("audience");
   const [showAdv, setShowAdv] = useState(false);
-  const [sortBy, setSortBy] = useState("grade");   // grade | followers
+  const [sortBy, setSortBy] = useState("grade");
   const [query, setQuery] = useState("");
   const [personResult, setPersonResult] = useState(null);
   const [personBusy, setPersonBusy] = useState(false);
 
+  const [loadError, setLoadError] = useState(false);
   useEffect(() => {
-    fetch("/api/config").then(r=>r.json()).then(c=>{
-      setCfg(c);
-      setNiche(c.niches[0]);
-      setSample(c.default_sample_size);
-      setScanDepth(c.default_pool_size);
-      setConcurrency(c.default_concurrency);
-    });
+    fetch("/api/config")
+      .then(r => { if (!r.ok) throw new Error("config"); return r.json(); })
+      .then(c=>{
+        setCfg(c);
+        setNiche(c.niches[0]);
+        setSample(c.default_sample_size);
+        setConcurrency(c.default_concurrency);
+      })
+      .catch(() => setLoadError(true));
     return () => clearInterval(pollRef.current);
   }, []);
 
   const activeNiche = () => niche === "__custom__" ? custom.trim() : niche;
+  const [pendingReq, setPendingReq] = useState(null);
 
-  async function getEstimate(selectedMode = "custom") {
+  function buildReq(selectedMode, opts = {}) {
+    return {
+      handle, niche: activeNiche(), mode: selectedMode,
+      sample_size: opts.sample_size ?? +sample,
+      pool_size: opts.pool_size ?? +scanDepth,
+      selection: opts.selection ?? "random",
+      web_lookup: opts.web_lookup ?? webLookup,
+      skip_bots: opts.skip_bots ?? skipBots,
+      force_refresh: forceRefresh,
+    };
+  }
+
+  async function getEstimate(selectedMode = "custom", opts = {}) {
     setError(null);
     if (!handle.trim()) { setError("Paste an X link or @handle."); return; }
     if (!activeNiche()) { setError("Pick or type a niche."); return; }
     setMode(selectedMode);
-    const r = await fetch("/api/estimate", { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ handle, niche: activeNiche(), mode: selectedMode, sample_size: +sample, pool_size: +scanDepth, web_lookup: webLookup, skip_bots: skipBots, force_refresh: forceRefresh })});
-    if (!r.ok) { setError((await r.json()).detail || "Estimate failed."); return; }
-    setEst(await r.json());
-    setStage("confirm");
+    const req = buildReq(selectedMode, opts);
+    setPendingReq(req);
+    setEstimating(true);
+    try {
+      const r = await fetch("/api/estimate", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(req)});
+      if (!r.ok) { setError((await r.json().catch(()=>({}))).detail || "Couldn't estimate the cost. Please try again."); return; }
+      setEst(await r.json());
+      setStage("confirm");
+    } catch (e) { setError("Network error — couldn't reach the server. Please try again."); }
+    finally { setEstimating(false); }
+  }
+
+  // Continue down the most-followed list (or analyze 100 more), reusing cache.
+  function continueNext() {
+    if (!result) return;
+    const next = (result.analyzed || 0) + 100;
+    getEstimate("custom", {
+      sample_size: next,
+      selection: result.selection || "random",
+      web_lookup: !!result.researched,
+      skip_bots: true,
+    });
   }
 
   async function startRun() {
     setError(null); setResult(null); setProgress(null); setStage("running");
-    const r = await fetch("/api/analyze", { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ handle, niche: activeNiche(), mode, sample_size:+sample, pool_size:+scanDepth, concurrency:+concurrency, web_lookup:webLookup, skip_bots:skipBots, force_refresh:forceRefresh })});
-    if (!r.ok) { setError((await r.json()).detail || "Failed to start."); setStage("confirm"); return; }
-    const { job_id } = await r.json();
+    let job_id;
+    try {
+      const req = { ...(pendingReq || buildReq(mode)), concurrency:+concurrency };
+      const r = await fetch("/api/analyze", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(req)});
+      if (!r.ok) { setError((await r.json().catch(()=>({}))).detail || "Couldn't start the run. Please try again."); setStage("error"); return; }
+      job_id = (await r.json()).job_id;
+    } catch (e) { setError("Network error — couldn't reach the server. Please try again."); setStage("error"); return; }
+
+    let fails = 0;
     pollRef.current = setInterval(async () => {
-      const p = await (await fetch("/api/progress/"+job_id)).json();
-      setProgress(p);
-      if (p.status === "done") { clearInterval(pollRef.current); setResult(p.result); setStage("done"); }
-      if (p.status === "error") { clearInterval(pollRef.current); setError(p.error); setStage("confirm"); }
+      try {
+        const resp = await fetch("/api/progress/"+job_id);
+        if (!resp.ok) throw new Error("progress");
+        const p = await resp.json();
+        fails = 0;
+        setProgress(p);
+        if (p.status === "done") { clearInterval(pollRef.current); setResult(p.result); setStage("done"); }
+        if (p.status === "error") { clearInterval(pollRef.current); setError(p.error || "The run failed. Please try again."); setStage("error"); }
+      } catch (e) {
+        if (++fails >= 4) { clearInterval(pollRef.current); setError("Lost connection to the run. Please try again."); setStage("error"); }
+      }
     }, 900);
   }
 
@@ -170,144 +363,143 @@ function App() {
 
   function reset() { setStage("form"); setResult(null); setProgress(null); setEst(null); setError(null); }
 
-  if (!cfg) return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
+  if (loadError) return (
+    <div className="min-h-screen flex items-center justify-center px-5">
+      <div className="card p-7 text-center max-w-md">
+        <h2 className="text-xl font-extrabold mb-2">Couldn't load the app</h2>
+        <p className="text-sm mb-4" style={{color:MUTED}}>The server didn't respond. Make sure it's running, then reload.</p>
+        <button onClick={()=>window.location.reload()} className="btn btn-purple">Reload</button>
+      </div>
+    </div>
+  );
+  if (!cfg) return <div className="min-h-screen flex items-center justify-center" style={{color:MUTED}}>Loading…</div>;
 
   const mock = cfg.mock.apify || cfg.mock.anthropic;
 
   return (
-    <div className="min-h-screen max-w-5xl mx-auto px-5 py-8">
-      <header className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Niche<span className="text-fuchsia-400">Fit</span></h1>
-          <p className="text-slate-400 text-sm">Score how well an X account's audience fits a niche — follower by follower, with Claude Haiku.</p>
+    <div className="min-h-screen max-w-5xl mx-auto px-5 py-10">
+      {/* hero */}
+      <header className="mb-8">
+        <div className="flex items-center justify-between mb-7">
+          <div className="text-xl font-extrabold tracking-tight">Audience<span style={{color:PURPLE}}>grading</span></div>
+          <span className="text-xs" style={{color:"#9a9588"}}>model: {cfg.model}</span>
         </div>
-        <span className="text-xs text-slate-500">model: {cfg.model}</span>
+        <h1 className="font-extrabold tracking-tight" style={{fontSize:"3.25rem", lineHeight:1.02, fontWeight:900}}>
+          Grade any X audience<br/><span style={{color:PURPLE}}>for your niche.</span>
+        </h1>
+        <p className="mt-4 text-lg" style={{color:MUTED, maxWidth:"40rem"}}>
+          Bot-filtered, research-backed grading of an account's followers — or the influence of any single person.
+        </p>
       </header>
 
-      <div className="rounded-lg p-3 mb-5 text-sm border border-amber-400/30 bg-amber-400/10 text-amber-200">
-        🧪 <b>Demo / proof-of-concept.</b> This shows what's possible — scores are
-        <b> illustrative, not validated</b>. The rubric, bot filter, and especially
-        the follower sampling (limited by the data source, which returns newest
-        followers first) all need real fine-tuning before relying on results.
-        Treat everything here as directional.
+      {/* demo notice */}
+      <div className="card p-4 mb-6 flex items-start gap-3" style={{background:"#FBF9F2"}}>
+        <span className="pill" style={{background:PURPLE, color:"#fff", borderColor:PURPLE, fontSize:".72rem", padding:".2rem .6rem"}}>DEMO</span>
+        <p className="text-sm" style={{color:"#56524a"}}>
+          A proof-of-concept — scores are <b>illustrative, not validated</b>. The rubric, bot filter,
+          and follower sampling (the data source returns newest followers first) all need fine-tuning
+          before relying on results.
+        </p>
       </div>
 
-      {mock && (
-        <div className="glass rounded-lg p-3 mb-5 text-sm text-amber-300">
-          ⚠️ Mock mode active{cfg.mock.apify ? " — Apify (bundled sample followers)" : ""}{cfg.mock.anthropic ? " — Haiku (heuristic scoring)" : ""}.
-          Add the missing key(s) to <code>.env</code> and restart for live data + real scores.
-        </div>
-      )}
-
-      {error && <div className="glass rounded-lg p-3 mb-5 text-sm text-red-300">⚠️ {error}</div>}
+      {error && stage !== "error" && <div className="card p-3 mb-6 text-sm" style={{borderColor:"#E5484D", color:"#b3261e", background:"#fdeceb"}}>{error}</div>}
 
       {/* FORM */}
       {stage === "form" && (
         <div className="space-y-5">
-          {/* tab switch */}
           <div className="flex gap-2">
-            <button onClick={()=>{setTab("audience");setError(null);}}
-              className={"px-4 py-2 rounded-lg text-sm font-medium transition " + (tab==="audience" ? "bg-fuchsia-500 text-black" : "border border-white/15 text-slate-300 hover:bg-white/5")}>
-              Audience analysis
-            </button>
-            <button onClick={()=>{setTab("person");setError(null);}}
-              className={"px-4 py-2 rounded-lg text-sm font-medium transition " + (tab==="person" ? "bg-fuchsia-500 text-black" : "border border-white/15 text-slate-300 hover:bg-white/5")}>
-              Single person
-            </button>
+            <button onClick={()=>{setTab("audience");setError(null);}} className={"pill " + (tab==="audience"?"pill-active":"")}>Audience analysis</button>
+            <button onClick={()=>{setTab("person");setError(null);}} className={"pill " + (tab==="person"?"pill-active":"")}>Single person</button>
           </div>
 
-          {/* AUDIENCE TAB */}
           {tab === "audience" && (
-            <div className="glass rounded-2xl p-6 space-y-5">
+            <div className="card p-7 space-y-6">
               <div className="grid md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm mb-1 text-slate-300">X account link or @handle</label>
-                  <input value={handle} onChange={e=>setHandle(e.target.value)} placeholder="https://x.com/naval  or  @naval"
-                    className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                  <label className="lbl">X account link or @handle</label>
+                  <input value={handle} onChange={e=>setHandle(e.target.value)} placeholder="https://x.com/naval  or  @naval" className="inp"/>
                 </div>
                 <NicheField {...{niche,setNiche,custom,setCustom,cfg}}/>
               </div>
 
-              <div className="text-sm text-slate-400">Choose how to analyze the audience:</div>
-              <div className="grid md:grid-cols-2 gap-3">
-                <button onClick={()=>getEstimate("full")}
-                  className="text-left rounded-xl p-4 border border-fuchsia-400/40 bg-fuchsia-400/10 hover:bg-fuchsia-400/20 transition">
-                  <div className="font-semibold text-fuchsia-200">⚡ Full account (cheap)</div>
-                  <div className="text-xs text-slate-400 mt-1">Random sample of everyone scanned. Measures the bot % — which lowers the overall score. No web research.</div>
-                </button>
-                <button onClick={()=>getEstimate("top")}
-                  className="text-left rounded-xl p-4 border border-indigo-400/40 bg-indigo-400/10 hover:bg-indigo-400/20 transition">
-                  <div className="font-semibold text-indigo-200">★ Top followers (deep)</div>
-                  <div className="text-xs text-slate-400 mt-1">Ranks everyone scanned by their own follower count, then researches & grades the top ones.</div>
-                </button>
+              <div>
+                <div className="lbl">Choose how to analyze the audience</div>
+                <div className="grid md:grid-cols-2 gap-3">
+                  <button onClick={()=>getEstimate("full")} disabled={estimating} className="card-teal text-left p-5 transition hover:brightness-110 disabled:opacity-60">
+                    <div className="text-lg font-extrabold">Full account</div>
+                    <div className="text-sm mt-1" style={{color:"rgba(255,255,255,.8)"}}>Random sample of all your followers. Measures the bot rate — which lowers the overall score. Cheap, no web research.</div>
+                  </button>
+                  <button onClick={()=>getEstimate("top")} disabled={estimating} className="card-purple text-left p-5 transition hover:brightness-110 disabled:opacity-60">
+                    <div className="text-lg font-extrabold">Top followers</div>
+                    <div className="text-sm mt-1" style={{color:"rgba(255,255,255,.8)"}}>Ranks all your followers by their own follower count, then researches &amp; grades the top 100.</div>
+                  </button>
+                </div>
+                {estimating && <div className="mt-2 text-sm" style={{color:MUTED}}>Checking account size &amp; estimating cost…</div>}
               </div>
 
               <div>
-                <button onClick={()=>setShowAdv(!showAdv)} className="text-xs text-slate-400 hover:text-slate-200">
-                  {showAdv ? "▾" : "▸"} Advanced / custom run
+                <button onClick={()=>setShowAdv(!showAdv)} className="text-sm font-semibold" style={{color:PURPLE}}>
+                  {showAdv ? "– Hide advanced options" : "+ Advanced / custom run"}
                 </button>
                 {showAdv && (
-                  <div className="mt-3 space-y-4 border-t border-white/10 pt-4">
+                  <div className="mt-4 space-y-4 border-t pt-4" style={{borderColor:"#E7E2D5"}}>
                     <div className="grid md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm mb-1 text-slate-300">Sample size (real followers to grade)</label>
-                        <input type="number" min="1" max={cfg.hard_cap} value={sample} onChange={e=>setSample(e.target.value)}
-                          className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                        <label className="lbl">Sample size (real followers to grade)</label>
+                        <input type="number" min="1" max={cfg.hard_cap} value={sample} onChange={e=>setSample(e.target.value)} className="inp"/>
                       </div>
                       <div>
-                        <label className="block text-sm mb-1 text-slate-300">Scan depth (followers to scrape)</label>
-                        <input type="number" min="200" max={cfg.hard_cap} value={scanDepth} onChange={e=>setScanDepth(e.target.value)}
-                          className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                        <label className="lbl">Scan depth — 0 = scan all followers</label>
+                        <input type="number" min="0" max={cfg.hard_cap} value={scanDepth} onChange={e=>setScanDepth(e.target.value)} className="inp"/>
                       </div>
                     </div>
                     <div className="grid md:grid-cols-3 gap-3 items-center">
                       <div>
-                        <label className="block text-sm mb-1 text-slate-300">Concurrency</label>
-                        <input type="number" min="1" max="32" value={concurrency} onChange={e=>setConcurrency(e.target.value)}
-                          className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                        <label className="lbl">Concurrency</label>
+                        <input type="number" min="1" max="32" value={concurrency} onChange={e=>setConcurrency(e.target.value)} className="inp"/>
                       </div>
-                      <label className="flex items-center gap-2 text-sm text-slate-300 pt-5">
+                      <label className="flex items-center gap-2 text-sm font-medium pt-5">
                         <input type="checkbox" checked={webLookup} onChange={e=>setWebLookup(e.target.checked)} className="w-4 h-4"/> Research (web)
                       </label>
-                      <label className="flex items-center gap-2 text-sm text-slate-300 pt-5">
+                      <label className="flex items-center gap-2 text-sm font-medium pt-5">
                         <input type="checkbox" checked={skipBots} onChange={e=>setSkipBots(e.target.checked)} className="w-4 h-4"/> Skip bots
                       </label>
                     </div>
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <label className="flex items-center gap-2 text-sm font-medium">
                       <input type="checkbox" checked={forceRefresh} onChange={e=>setForceRefresh(e.target.checked)} className="w-4 h-4"/> Force refresh (ignore cache)
                     </label>
-                    <button onClick={()=>getEstimate("custom")}
-                      className="w-full bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg py-3 font-semibold text-black">
-                      Estimate custom run →
-                    </button>
+                    <button onClick={()=>getEstimate("custom")} disabled={estimating} className="btn btn-ink w-full">Estimate custom run</button>
                   </div>
                 )}
               </div>
-
-              <p className="text-xs text-amber-300/70">⚠️ Scans your <b>{fmt(scanDepth)}</b> most-recent followers — raise “scan depth” in Advanced to ≥ your follower count to reach everyone (the API returns newest-first).</p>
             </div>
           )}
 
-          {/* SINGLE PERSON TAB */}
           {tab === "person" && (
-            <div className="glass rounded-2xl p-6 space-y-4">
+            <div className="card p-7 space-y-5">
               <div>
-                <h2 className="text-lg font-semibold">Analyze one person's influence</h2>
-                <p className="text-xs text-slate-400 mt-1">Enter anyone's handle and an area — we research who they are and grade their influence / fit for it. (This doesn't analyze their followers.)</p>
+                <h2 className="text-xl font-extrabold">Analyze one person's influence</h2>
+                <p className="text-sm mt-1" style={{color:MUTED}}>Enter anyone's handle and an area — we research who they are and grade their influence / fit for it. This doesn't analyze their followers.</p>
               </div>
               <div className="grid md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm mb-1 text-slate-300">X link or @handle of the person</label>
-                  <input value={handle} onChange={e=>setHandle(e.target.value)} placeholder="@sama"
-                    className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+                  <label className="lbl">X link or @handle of the person</label>
+                  <input value={handle} onChange={e=>setHandle(e.target.value)} placeholder="@sama" className="inp"/>
                 </div>
                 <NicheField {...{niche,setNiche,custom,setCustom,cfg,label:"Area / niche"}}/>
               </div>
-              <button onClick={analyzePerson} disabled={personBusy}
-                className="w-full bg-fuchsia-500 hover:bg-fuchsia-400 disabled:opacity-50 transition rounded-lg py-3 font-semibold text-black">
-                {personBusy ? "Researching…" : "Analyze influence →"}
+              <button onClick={analyzePerson} disabled={personBusy} className="btn btn-purple w-full">
+                {personBusy ? "Researching…" : "Analyze influence"}
               </button>
-              {personResult && <PersonCard r={personResult} cfg={cfg}/>}
+              {personResult && (personResult.status === "not_found"
+                ? <div className="soft p-5 mt-2" style={{borderColor:"#E5b94a", background:"#fdf6e3"}}>
+                    <div className="font-extrabold mb-1">No profile found for @{personResult.handle}</div>
+                    <p className="text-sm" style={{color:"#56524a"}}>
+                      We couldn't pull a public profile or recent tweets for this handle — it may be
+                      private, have no tweets, or not exist. Double-check the spelling and try again.
+                    </p>
+                  </div>
+                : <PersonCard r={personResult} cfg={cfg}/>)}
             </div>
           )}
         </div>
@@ -315,60 +507,80 @@ function App() {
 
       {/* CONFIRM */}
       {stage === "confirm" && est && (
-        <div className="glass rounded-2xl p-6 space-y-4">
-          <h2 className="text-xl font-semibold">Confirm run</h2>
-          <p className="text-slate-300">Analyzing <span className="font-mono text-fuchsia-300">@{est.handle}</span> for the
-            <span className="text-fuchsia-300"> "{activeNiche()}"</span> niche.</p>
+        <div className="card p-7 space-y-5">
+          <h2 className="text-2xl font-extrabold">Confirm run</h2>
+          <p style={{color:"#56524a"}}>Analyzing <span className="font-bold" style={{color:PURPLE}}>@{est.handle}</span> for the
+            <span className="font-bold" style={{color:PURPLE}}> "{activeNiche()}"</span> niche.</p>
           {est.mode && est.mode !== "custom" && (
-            <div className="text-sm text-slate-300">
-              Mode: <b className="text-fuchsia-200">{est.mode === "full" ? "Full account (cheap estimate)" : "Top 100 by reach (deep)"}</b>
+            <div className="text-sm font-medium soft p-3" style={{display:"inline-block"}}>
+              {est.mode === "full" ? "Full account (cheap estimate)" : "Top followers (deep)"}
               {" · "}{est.selection === "top" ? "highest-reach followers" : "random sample"}
               {" · "}{est.web_lookup ? "with web research" : "no web research"}
             </div>
           )}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="Pool scraped" value={fmt(est.to_scrape)} sub={est.cached_followers?`${fmt(est.cached_followers)} cached`:"bot-filtered free"}/>
+            <Stat label={est.scan_all ? "Followers (all)" : "Pool scraped"} value={fmt(est.to_scrape)} sub={est.cached_followers?`${fmt(est.cached_followers)} cached`:"bot-filtered free"}/>
             <Stat label="Real analyzed (est.)" value={`~${fmt(est.to_score)}`} sub={est.skip_bots?"after bot filter":""}/>
             <Stat label="Apify cost" value={usd(est.apify_cost)} sub={est.apify_mock?"mock — free":""}/>
             <Stat label="Haiku cost" value={usd(est.haiku_cost)} sub={est.anthropic_mock?"mock — free":""}/>
           </div>
-          {est.web_lookups>0 && <p className="text-sm text-slate-400">+ ~{est.web_lookups} web research lookups ({usd(est.web_cost)})</p>}
-          <p className="text-xs text-slate-500">Estimate assumes ~half the pool survives the bot filter; actual cost is often lower. Bots are scored free.</p>
-          <div className="flex items-center justify-between border-t border-white/10 pt-4">
-            <span className="text-slate-300">Estimated total</span>
-            <span className="text-2xl font-bold text-fuchsia-300">{usd(est.total_cost)}</span>
+          {est.web_lookups>0 && <p className="text-sm" style={{color:MUTED}}>+ ~{est.web_lookups} web research lookups ({usd(est.web_cost)})</p>}
+          <p className="text-xs" style={{color:"#9a9588"}}>Estimate assumes ~half the pool survives the bot filter; actual cost is often lower. Bots are scored free.</p>
+          <HowGrading cfg={cfg}/>
+          <div className="flex items-center justify-between border-t pt-4" style={{borderColor:"#E7E2D5"}}>
+            <span style={{color:"#56524a"}}>Estimated total</span>
+            <span className="text-3xl font-extrabold" style={{color:PURPLE}}>{usd(est.total_cost)}</span>
           </div>
           <div className="flex gap-3">
-            <button onClick={reset} className="px-5 py-3 rounded-lg border border-white/15 hover:bg-white/5">← Back</button>
-            <button onClick={startRun} className="flex-1 bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg py-3 font-semibold text-black">
-              Confirm & analyze
-            </button>
+            <button onClick={reset} className="btn btn-ghost">Back</button>
+            <button onClick={startRun} className="btn btn-purple flex-1">Confirm &amp; analyze</button>
           </div>
         </div>
       )}
 
       {/* RUNNING */}
       {stage === "running" && (
-        <div className="glass rounded-2xl p-6 space-y-4">
-          <div className="flex items-center gap-3">
-            <div className="w-5 h-5 border-2 border-fuchsia-400 border-t-transparent rounded-full spin"></div>
-            <h2 className="text-xl font-semibold">{progress?.phase || "Starting…"}</h2>
+        <div className="grid md:grid-cols-3 gap-5">
+          <div className="card p-6 md:col-span-1 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-5 h-5 rounded-full spin" style={{border:"3px solid "+PURPLE, borderTopColor:"transparent"}}></div>
+              <h2 className="text-lg font-extrabold">{progress?.phase || "Starting…"}</h2>
+            </div>
+            <Steps phase={progress?.phase || "Queued"}/>
+            <div className="soft p-3 text-xs" style={{color:"#56524a"}}>{phaseHint(progress?.phase)}</div>
           </div>
-          {progress && (
-            <>
-              <div className="h-3 rounded-full bg-white/10 overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-indigo-400 to-fuchsia-400 transition-all"
-                  style={{width: (progress.total? (progress.scored/progress.total*100):5)+"%"}}/>
-              </div>
-              <div className="flex justify-between text-sm text-slate-400">
-                <span>{fmt(progress.scored)} / {fmt(progress.total)} scored {progress.skipped?`· ${progress.skipped} skipped`:""}</span>
-                <span>spent this run: <span className="text-fuchsia-300">{usd(progress.spend.total)}</span></span>
-              </div>
-              <div className="bg-black/40 rounded-lg p-3 h-40 overflow-auto font-mono text-xs text-slate-400 space-y-0.5">
-                {(progress.logs||[]).map((l,i)=><div key={i}>{l}</div>)}
-              </div>
-            </>
-          )}
+          <div className="card p-6 md:col-span-2 space-y-4">
+            {progress && (
+              <>
+                <div className="h-3 rounded-full overflow-hidden" style={{background:"#ECE7DA"}}>
+                  <div className="h-full rounded-full" style={{width:(progress.total? (progress.scored/progress.total*100):5)+"%", background:PURPLE}}/>
+                </div>
+                <div className="flex justify-between text-sm" style={{color:MUTED}}>
+                  <span>{fmt(progress.scored)} / {fmt(progress.total)} graded {progress.skipped?`· ${progress.skipped} skipped`:""}</span>
+                  <span>spent this run: <span className="font-bold" style={{color:INK}}>{usd(progress.spend.total)}</span></span>
+                </div>
+                <div className="soft p-3 h-48 overflow-auto font-mono text-xs space-y-0.5" style={{color:"#56524a"}}>
+                  {(progress.logs||[]).map((l,i)=><div key={i}>{l}</div>)}
+                </div>
+              </>
+            )}
+            <HowGrading cfg={cfg}/>
+          </div>
+        </div>
+      )}
+
+      {/* ERROR */}
+      {stage === "error" && (
+        <div className="card p-7 space-y-4">
+          <h2 className="text-2xl font-extrabold">Something went wrong</h2>
+          <p style={{color:"#b3261e"}}>{error || "An unexpected error occurred."}</p>
+          <p className="text-sm" style={{color:MUTED}}>
+            This usually means the data source hiccuped, a key is out of credits, or the connection dropped.
+            Nothing was saved — just try again.
+          </p>
+          <div className="flex gap-3">
+            <button onClick={reset} className="btn btn-purple">Try again</button>
+          </div>
         </div>
       )}
 
@@ -376,21 +588,20 @@ function App() {
       {stage === "done" && result && (
         <div className="space-y-5">
           <div className="grid md:grid-cols-3 gap-5">
-            <div className="glass rounded-2xl p-6 flex flex-col items-center justify-center">
-              <Gauge value={result.audience_score}/>
-              <div className="mt-2 text-center text-xs text-slate-400">{result.score_basis || "audience score"}</div>
+            <div className="card-teal p-6 flex flex-col items-center justify-center">
+              <BigScore value={result.audience_score} label={result.selection==="top" ? "top cohort" : "audience"}/>
               {result.selection !== "top" && (
-                <div className="mt-2 text-center text-sm text-slate-400">
-                  real followers avg: <span className="text-slate-200 font-semibold">{result.real_audience_score}</span> / 100
+                <div className="mt-3 text-center text-sm" style={{color:"rgba(255,255,255,.75)"}}>
+                  real followers avg: <span className="font-bold" style={{color:LIME}}>{result.real_audience_score}</span>
                 </div>
               )}
-              <div className="mt-3 text-center">
-                <div className="text-2xl font-bold text-red-300">{result.bot_rate}%</div>
-                <div className="text-xs text-slate-400">bots / inactive (of {fmt(result.pool_size)} scanned)</div>
+              <div className="mt-4 text-center">
+                <div className="text-3xl font-extrabold" style={{color:LIME}}>{result.bot_rate}%</div>
+                <div className="text-xs" style={{color:"rgba(255,255,255,.7)"}}>bots / inactive of {fmt(result.pool_size)} scanned</div>
               </div>
             </div>
-            <div className="glass rounded-2xl p-6 md:col-span-2">
-              <h3 className="font-semibold mb-3 text-slate-300">Criterion breakdown (avg)</h3>
+            <div className="card p-6 md:col-span-2">
+              <h3 className="font-extrabold mb-4">Criterion breakdown (avg)</h3>
               <div className="space-y-3">
                 {Object.values(result.criteria_avg).map((c,i)=><CriterionBar key={i} c={c}/>)}
               </div>
@@ -398,29 +609,28 @@ function App() {
           </div>
 
           <div className="grid md:grid-cols-3 gap-5">
-            <div className="glass rounded-2xl p-6">
-              <h3 className="font-semibold mb-3 text-slate-300">Tier distribution <span className="text-xs text-slate-500">(real sample)</span></h3>
+            <div className="card p-6">
+              <h3 className="font-extrabold mb-3">Tier distribution <span className="text-xs" style={{color:"#9a9588"}}>(real sample)</span></h3>
               <Donut tiers={result.tiers}/>
               {result.projected && (
-                <div className="mt-4 pt-3 border-t border-white/10">
-                  <div className="text-xs text-slate-400 mb-2">Projected across the full account:</div>
+                <div className="mt-4 pt-3 border-t" style={{borderColor:"#E7E2D5"}}>
+                  <div className="text-xs mb-2" style={{color:MUTED}}>Projected across the full account:</div>
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-                    <span><span className="text-red-300 font-semibold">{result.projected.Bots}%</span> bots</span>
+                    <span><span className="font-extrabold" style={{color:"#E5484D"}}>{result.projected.Bots}%</span> bots</span>
                     {["A","B","C","D"].map(t=>(
-                      <span key={t}><span className="font-semibold" style={{color:TIER_COLORS[t]}}>{result.projected[t]}%</span> {t}</span>
+                      <span key={t}><span className="font-extrabold" style={{color:TIER_COLORS[t]}}>{result.projected[t]}%</span> {t}</span>
                     ))}
                   </div>
                 </div>
               )}
             </div>
-            <div className="glass rounded-2xl p-6 md:col-span-2">
-              <h3 className="font-semibold mb-2 text-slate-300">Summary</h3>
-              <p className="text-slate-200 leading-relaxed">{result.summary}</p>
-              <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-400">
+            <div className="card p-6 md:col-span-2">
+              <h3 className="font-extrabold mb-2">Summary</h3>
+              <p className="leading-relaxed" style={{color:"#3f3c34"}}>{result.summary}</p>
+              <div className="mt-4 flex flex-wrap gap-4 text-xs" style={{color:MUTED}}>
                 <span>analyzed: {fmt(result.analyzed)} real of {fmt(result.pool_size)} pool</span>
                 <span>bots flagged: {fmt(result.flagged_bots)} ({result.bot_rate}%)</span>
                 <span>avg confidence: {result.avg_confidence}</span>
-                <span>skipped: {fmt(result.skipped)}</span>
                 <span>spent: {usd(result.spend.total)} (apify {usd(result.spend.apify)} · haiku {usd(result.spend.anthropic)})</span>
               </div>
             </div>
@@ -429,31 +639,25 @@ function App() {
           {(() => {
             const all = result.followers || result.top_followers || [];
             const q = query.trim().toLowerCase();
-            const filtered = q
-              ? all.filter(f => (f.screen_name||"").toLowerCase().includes(q) || (f.name||"").toLowerCase().includes(q))
-              : all;
+            const filtered = q ? all.filter(f => (f.screen_name||"").toLowerCase().includes(q) || (f.name||"").toLowerCase().includes(q)) : all;
             const sorted = [...filtered].sort((a,b)=>
-              sortBy === "followers"
-                ? (b.followers_count||0) - (a.followers_count||0)
-                : (b.total||0) - (a.total||0) || (b.followers_count||0) - (a.followers_count||0)
-            );
+              sortBy === "followers" ? (b.followers_count||0)-(a.followers_count||0)
+                : (b.total||0)-(a.total||0) || (b.followers_count||0)-(a.followers_count||0));
             return (
-              <div className="glass rounded-2xl p-6">
+              <div className="card p-6">
                 <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                  <h3 className="font-semibold text-slate-300">All graded followers <span className="text-xs text-slate-500">({sorted.length})</span></h3>
+                  <h3 className="font-extrabold">All graded followers <span className="text-xs" style={{color:"#9a9588"}}>({sorted.length})</span></h3>
                   <div className="flex items-center gap-2">
-                    <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="search handle / name"
-                      className="bg-black/30 rounded-lg px-3 py-1.5 text-sm outline-none border border-white/10 focus:border-fuchsia-400"/>
-                    <select value={sortBy} onChange={e=>setSortBy(e.target.value)}
-                      className="bg-black/30 rounded-lg px-3 py-1.5 text-sm outline-none border border-white/10 focus:border-fuchsia-400">
+                    <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="search handle / name" className="inp" style={{width:"14rem", padding:".45rem .8rem"}}/>
+                    <select value={sortBy} onChange={e=>setSortBy(e.target.value)} className="inp" style={{width:"auto", padding:".45rem .8rem"}}>
                       <option value="grade">Sort by grade</option>
                       <option value="followers">Sort by followers</option>
                     </select>
                   </div>
                 </div>
-                <div className="overflow-auto max-h-[32rem]">
+                <div className="overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead className="text-slate-400 text-left border-b border-white/10 sticky top-0 bg-[#0b1020]">
+                    <thead className="text-left sticky top-0" style={{background:"#fff", color:MUTED, borderBottom:"1px solid #E7E2D5"}}>
                       <tr>
                         <th className="py-2 pr-3">#</th><th className="pr-3">Handle</th><th className="pr-3">Followers</th>
                         <th className="pr-2">Grade</th><th className="pr-2">Tier</th>
@@ -467,20 +671,18 @@ function App() {
                     </thead>
                     <tbody>
                       {sorted.map((f,i)=>(
-                        <tr key={i} className="border-b border-white/5 hover:bg-white/5">
-                          <td className="py-2 pr-3 text-slate-500">{i+1}</td>
-                          <td className="pr-3">
-                            <a className="text-fuchsia-300 hover:underline" target="_blank" href={"https://x.com/"+f.screen_name}>@{f.screen_name}</a>
-                          </td>
-                          <td className="pr-3 text-slate-400">{fmt(f.followers_count)}</td>
-                          <td className="pr-2 font-semibold">{f.total}</td>
+                        <tr key={i} style={{borderBottom:"1px solid #F0ECE0"}}>
+                          <td className="py-2 pr-3" style={{color:"#9a9588"}}>{i+1}</td>
+                          <td className="pr-3"><a className="font-semibold hover:underline" target="_blank" href={"https://x.com/"+f.screen_name} style={{color:PURPLE}}>@{f.screen_name}</a></td>
+                          <td className="pr-3" style={{color:MUTED}}>{fmt(f.followers_count)}</td>
+                          <td className="pr-2 font-extrabold">{f.total}</td>
                           <td className="pr-2"><TierBadge tier={f.tier}/></td>
-                          <td className="pr-2 text-slate-400">{f.niche_relevance}</td>
-                          <td className="pr-2 text-slate-400">{f.influence_reach}</td>
-                          <td className="pr-2 text-slate-400">{f.authority}</td>
-                          <td className="pr-2 text-slate-400">{f.engagement_quality}</td>
-                          <td className="pr-2 text-slate-400">{f.authenticity}</td>
-                          <td className="text-slate-400 max-w-xs">{f.reasoning}</td>
+                          <td className="pr-2" style={{color:MUTED}}>{f.niche_relevance}</td>
+                          <td className="pr-2" style={{color:MUTED}}>{f.influence_reach}</td>
+                          <td className="pr-2" style={{color:MUTED}}>{f.authority}</td>
+                          <td className="pr-2" style={{color:MUTED}}>{f.engagement_quality}</td>
+                          <td className="pr-2" style={{color:MUTED}}>{f.authenticity}</td>
+                          <td style={{color:"#56524a", maxWidth:"20rem"}}>{f.reasoning}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -490,69 +692,23 @@ function App() {
             );
           })()}
 
-          <button onClick={reset} className="bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg px-6 py-3 font-semibold text-black">
-            ↺ New analysis
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <button onClick={continueNext} className="btn btn-purple">
+              {result.selection === "top" ? "Analyze the next 100 by reach" : "Analyze 100 more"}
+            </button>
+            <button onClick={reset} className="btn btn-ghost">New analysis</button>
+          </div>
+          <p className="text-xs" style={{color:MUTED}}>
+            “Analyze 100 more” keeps the {result.analyzed} you've already graded (free from cache) and adds the next batch —
+            you'll see the added cost before confirming.
+          </p>
         </div>
       )}
 
-      <footer className="mt-10 pt-5 border-t border-white/10 text-center text-xs text-slate-500">
-        🧪 NicheFit is a demo / proof-of-concept. Scores are illustrative and not a validated product —
+      <footer className="mt-12 pt-5 border-t text-center text-xs" style={{borderColor:"#E7E2D5", color:"#9a9588"}}>
+        Audiencegrading is a demo / proof-of-concept. Scores are illustrative and not a validated product —
         the rubric, prompts, bot heuristics, and follower sampling would all need further fine-tuning for production use.
       </footer>
-    </div>
-  );
-}
-
-function Stat({ label, value, sub }) {
-  return (
-    <div className="bg-black/30 rounded-lg p-3">
-      <div className="text-xs text-slate-400">{label}</div>
-      <div className="text-lg font-semibold">{value}</div>
-      {sub && <div className="text-[11px] text-slate-500">{sub}</div>}
-    </div>
-  );
-}
-
-function NicheField({ niche, setNiche, custom, setCustom, cfg, label }) {
-  return (
-    <div>
-      <label className="block text-sm mb-1 text-slate-300">{label || "Niche"}</label>
-      <select value={niche} onChange={e=>setNiche(e.target.value)}
-        className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400">
-        {cfg.niches.map(n=><option key={n} value={n}>{n}</option>)}
-        <option value="__custom__">＋ custom…</option>
-      </select>
-      {niche === "__custom__" && (
-        <input value={custom} onChange={e=>setCustom(e.target.value)} placeholder="e.g. edtech, longevity biotech"
-          className="mt-2 w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
-      )}
-    </div>
-  );
-}
-
-function PersonCard({ r, cfg }) {
-  const color = r.total >= 80 ? "#22c55e" : r.total >= 60 ? "#84cc16" : r.total >= 40 ? "#f59e0b" : "#ef4444";
-  return (
-    <div className="border-t border-white/10 pt-4 space-y-3">
-      <div className="flex items-center gap-3">
-        <div className="text-4xl font-bold" style={{color}}>{r.total}</div>
-        <div>
-          <div className="flex items-center gap-2">
-            <TierBadge tier={r.tier}/>
-            <a className="text-fuchsia-300 hover:underline" target="_blank" href={"https://x.com/"+r.handle}>@{r.handle}</a>
-          </div>
-          <div className="text-xs text-slate-400">influence / fit for "{r.niche}" · grade {r.total}/100</div>
-        </div>
-      </div>
-      <div className="space-y-2">
-        {cfg.rubric.map((c,i)=><CriterionBar key={i} c={{label:c.label, max:c.max, avg:r[c.key]}}/>)}
-      </div>
-      <p className="text-sm text-slate-300"><b>Why:</b> {r.reasoning}</p>
-      {r.research && <p className="text-xs text-slate-400"><b>Research:</b> {r.research}</p>}
-      <div className="text-xs text-slate-500">
-        confidence {r.confidence}{r.mock && r.mock.anthropic ? " · mock (heuristic)" : ` · spent ${usd(r.spend)}`}
-      </div>
     </div>
   );
 }

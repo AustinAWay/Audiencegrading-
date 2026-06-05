@@ -92,6 +92,23 @@ def aggregate(handle: str, niche: str, scores: list[dict]) -> dict:
     }
 
 
+async def resolve_pool(handle: str, requested_pool: int) -> int:
+    """Decide how many followers to scrape.
+
+    requested_pool > 0  -> use it (an explicit Advanced override), clamped.
+    requested_pool <= 0 -> "scan all": detect the account's follower count and
+                           scrape that many (capped at the hard limit). Falls back
+                           to the default pool if detection fails.
+    """
+    cap = config.HARD_CAP_SAMPLE_SIZE
+    if requested_pool and int(requested_pool) > 0:
+        return max(config.APIFY_MIN_FOLLOWERS, min(int(requested_pool), cap))
+    count = await apify.fetch_follower_count(handle)
+    if not count:
+        return config.DEFAULT_POOL_SIZE
+    return max(config.APIFY_MIN_FOLLOWERS, min(count, cap))
+
+
 # --------------------------------------------------------------------------- #
 # Main run coroutine
 # --------------------------------------------------------------------------- #
@@ -195,7 +212,17 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
         await asyncio.gather(*(worker(f) for f in to_analyze))
 
         if len(bots) + len(real_results) == 0:
-            raise RuntimeError("No followers could be scored. Check the handle / tokens.")
+            raise RuntimeError(
+                "No followers could be scored — the account may be private or have no "
+                "followers. Check the handle and try again."
+            )
+        # We tried to grade real followers but every call failed — almost always an
+        # Anthropic key / credit / rate-limit issue. Don't report an empty "0" result.
+        if to_analyze and not real_results:
+            raise RuntimeError(
+                "Grading failed for every follower — this usually means an Anthropic "
+                "API problem (invalid key, no credits, or rate limits). Please retry."
+            )
 
         # ---- 4. aggregate (quality over the real sample) + bot stats ------ #
         job["phase"] = "Writing summary"
@@ -260,37 +287,59 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
         _log(jid, f"ERROR: {e}")
 
 
-# Standalone person check: no account stats are available, so tell the model to
-# judge on research and not penalise the activity/authenticity criteria.
 PERSON_NOTE = (
-    "This is a standalone person-influence check — only their handle, bio, and web "
-    "research are available, with NO account activity statistics. Judge Niche "
-    "Relevance, Real-World Influence, and Authority from the research; for Activity "
-    "and Authenticity, score neutrally (mid-range) and lower your confidence rather "
-    "than penalising for missing data."
+    "You have this person's actual profile (bio, location, activity counts, account "
+    "age), their recent tweets, and web research — grade all five criteria from this "
+    "real evidence. Niche Relevance and Activity should come mostly from the bio and "
+    "recent tweets; Real-World Influence and Authority from the research and bio."
 )
 
 
 async def analyze_person(raw_input: str, niche: str) -> dict:
-    """Analyze one specific person's influence/fit for a niche (research + score).
+    """Analyze one specific person's influence/fit for a niche.
 
-    Does not scrape an account's followers — it researches the individual and
-    scores them directly. Cheap (one research + one scoring call).
+    Pulls the person's real profile + recent tweets (so we actually have data to
+    judge), enriches with web research, then grades them. Does not scrape their
+    followers.
     """
     handle = apify.parse_handle(raw_input)
     if not handle:
         raise ValueError("Could not parse an X handle from the input.")
+
     scorer = Scorer(niche, concurrency=1)
-    follower = {"screen_name": handle, "name": handle}
-    web_ctx = await scorer.web_context(follower)
+    apify_cost = 0.0
+
+    # 1. Fetch the real profile + recent tweets (the reliable identity signal).
+    follower = None
+    if not config.APIFY_MOCK:
+        follower = await apify.fetch_profile_and_tweets(handle)
+        if follower is None:
+            return {
+                "status": "not_found",
+                "handle": handle,
+                "niche": niche,
+                "research": "",
+                "spend": 0.0,
+            }
+        apify_cost = round(config.PERSON_TWEETS / 1000.0 * config.APIFY_TWEET_COST_PER_1000, 4)
+    else:
+        follower = {"screen_name": handle, "name": handle}
+
+    # 2. Enrich with web research (real-world influence/authority), then grade.
+    web_ctx, _ = await scorer.research_person(follower)
     score = await scorer.score_one(follower, web_context=web_ctx, note=PERSON_NOTE)
     if score is None:
-        raise RuntimeError("Could not score this person — try again.")
+        raise RuntimeError("Scoring failed — please try again.")
+
     result = dict(score)
+    result["status"] = "ok"
     result["handle"] = handle
     result["niche"] = niche
+    result["name"] = follower.get("name", handle)
+    result["bio"] = follower.get("description", "")
+    result["tweet_count"] = len(follower.get("tweets") or [])
     result["research"] = web_ctx or ""
     result["researched"] = web_ctx is not None
-    result["spend"] = round(scorer.spend_usd, 4)
+    result["spend"] = round(scorer.spend_usd + apify_cost, 4)
     result["mock"] = {"apify": config.APIFY_MOCK, "anthropic": config.ANTHROPIC_MOCK}
     return result

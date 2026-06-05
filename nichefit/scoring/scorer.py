@@ -236,45 +236,55 @@ class Scorer:
             + self.output_tokens / 1_000_000 * config.HAIKU_OUTPUT_PRICE_PER_MTOK
         )
 
-    async def web_context(self, f: dict) -> str | None:
-        """Best-effort web research on who a follower actually is.
+    async def research_person(self, f: dict) -> tuple[str | None, bool]:
+        """Web research on who a follower actually is.
 
-        Drives the real-world influence and authority scores — the whole point of
-        the rubric is to value people by their real stature, not follower count.
-        Skips gracefully (returns None) if the web_search tool isn't available on
-        the account.
+        Returns (summary_text, identified). `identified` is False when the model
+        could not confidently find the specific person — callers should treat that
+        as "not found" rather than scoring them. Returns (None, False) in mock mode
+        or if the web_search tool errors / isn't available on the account.
         """
         if self.client is None:
-            return None
+            return None, False
         name = f.get("name") or f.get("screen_name")
         try:
             msg = await self.client.messages.create(
                 model=config.HAIKU_MODEL,
-                max_tokens=300,
+                max_tokens=320,
                 tools=[{"type": "web_search_20250305", "name": "web_search",
                         "max_uses": config.WEB_SEARCH_MAX_USES}],
                 messages=[{
                     "role": "user",
                     "content": (
                         f"Research who this X (Twitter) user is and what they post about. "
-                        f"Name: {name}. Handle: @{f.get('screen_name')}. "
-                        f"Bio: \"{f.get('description','')}\". Search the web (including "
-                        "their recent tweets/posts if findable). In 2-4 sentences summarize: "
-                        "(1) their real-world influence and authority — founder/executive "
-                        "roles and company size, investments, wealth/billionaire status, "
-                        "public prominence, recognized expertise; and (2) the main themes "
-                        "of their recent posts. If you cannot confidently identify them, "
-                        "say so plainly."
+                        f"Handle: @{f.get('screen_name')}. Name: {name}. "
+                        f"Bio: \"{f.get('description','')}\". Search the web. In 2-4 sentences "
+                        "summarize their real-world influence/authority (founder/executive roles "
+                        "and company size, investments, wealth, public prominence, recognized "
+                        "expertise) and the themes of their recent posts.\n"
+                        "Then, on a FINAL separate line, output exactly 'FOUND: yes' if you could "
+                        "confidently identify this specific person/account, or 'FOUND: no' if you "
+                        "could not."
                     ),
                 }],
             )
             if msg.usage:
                 self.input_tokens += msg.usage.input_tokens
                 self.output_tokens += msg.usage.output_tokens
-            text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-            return text.strip() or None
+            text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
+            found = True
+            m = re.search(r"FOUND:\s*(yes|no)", text, re.IGNORECASE)
+            if m:
+                found = m.group(1).lower() == "yes"
+                text = text[: m.start()].strip()  # hide the flag line from the user
+            return (text or None), found
         except Exception:
-            return None
+            return None, False
+
+    async def web_context(self, f: dict) -> str | None:
+        """Research summary for audience scoring (just the text; identity flag unused)."""
+        text, _ = await self.research_person(f)
+        return text
 
     async def write_summary(self, handle: str, agg: dict) -> str:
         """Final Haiku call: a 3-4 sentence plain-English audience summary."""

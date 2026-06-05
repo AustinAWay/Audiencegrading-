@@ -45,7 +45,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NicheFit", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Audiencegrading", version="1.0.0", lifespan=lifespan)
 
 
 # --------------------------------------------------------------------------- #
@@ -56,7 +56,8 @@ class EstimateReq(BaseModel):
     niche: str
     mode: str = "custom"                                  # "custom" | "full" | "top"
     sample_size: int = config.DEFAULT_SAMPLE_SIZE        # real followers to deeply analyze
-    pool_size: int = config.DEFAULT_POOL_SIZE            # followers to scrape + bot-filter
+    pool_size: int = 0                                   # 0 = scan all (auto-detect count)
+    selection: str = "random"                            # "random" | "top" (used in custom mode)
     web_lookup: bool = config.WEB_LOOKUP_ENABLED_DEFAULT
     skip_bots: bool = config.BOT_FILTER_ENABLED_DEFAULT
     force_refresh: bool = False
@@ -71,39 +72,20 @@ class PersonReq(BaseModel):
     niche: str
 
 
-def _clamp_sizes(sample_size: int, pool_size: int) -> tuple[int, int]:
-    """Sample is bounded by the hard cap; the pool is at least the sample size."""
-    sample = max(1, min(sample_size, config.HARD_CAP_SAMPLE_SIZE))
-    pool = max(sample, min(pool_size, config.HARD_CAP_SAMPLE_SIZE))
-    return sample, pool
-
-
 def _resolve(req: EstimateReq) -> dict:
-    """Apply a one-click mode preset, falling back to the request's own fields."""
+    """Apply a one-click mode preset, falling back to the request's own fields.
+
+    The pool ("scan depth") is resolved separately/asynchronously via
+    engine.resolve_pool, because "scan all" needs to detect the follower count.
+    """
     preset = config.MODE_PRESETS.get(req.mode, {})
-    sample = preset.get("sample_size", req.sample_size)
-    pool = preset.get("pool_size", req.pool_size)
-    sample, pool = _clamp_sizes(sample, pool)
+    sample = max(1, min(preset.get("sample_size", req.sample_size), config.HARD_CAP_SAMPLE_SIZE))
     return {
         "sample_size": sample,
-        "pool_size": pool,
         "web_lookup": preset.get("web_lookup", req.web_lookup),
         "skip_bots": preset.get("skip_bots", req.skip_bots),
-        "selection": preset.get("selection", "random"),
+        "selection": preset.get("selection", req.selection),
     }
-
-
-def _settings_from(req: AnalyzeReq) -> config.Settings:
-    r = _resolve(req)
-    return config.Settings(
-        sample_size=r["sample_size"],
-        pool_size=r["pool_size"],
-        concurrency=max(1, min(req.concurrency, 32)),
-        force_refresh=req.force_refresh,
-        web_lookup=r["web_lookup"],
-        skip_bots=r["skip_bots"],
-        selection=r["selection"],
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -133,7 +115,8 @@ async def post_estimate(req: EstimateReq):
     if not handle:
         raise HTTPException(400, "Could not parse an X handle from the input.")
     r = _resolve(req)
-    sample, pool = r["sample_size"], r["pool_size"]
+    sample = r["sample_size"]
+    pool = await engine.resolve_pool(handle, req.pool_size)  # "scan all" detects the count
 
     cached_followers = 0 if req.force_refresh else len(db.get_cached_followers(handle))
     cached_scores = 0 if req.force_refresh else len(db.get_cached_scores(handle, req.niche))
@@ -147,6 +130,7 @@ async def post_estimate(req: EstimateReq):
     est["mode"] = req.mode
     est["selection"] = r["selection"]
     est["web_lookup"] = r["web_lookup"]
+    est["scan_all"] = not (req.pool_size and req.pool_size > 0)
     return est
 
 
@@ -155,8 +139,19 @@ async def post_analyze(req: AnalyzeReq):
     handle = apify.parse_handle(req.handle)
     if not handle:
         raise HTTPException(400, "Could not parse an X handle from the input.")
+    r = _resolve(req)
+    pool = await engine.resolve_pool(handle, req.pool_size)
+    settings = config.Settings(
+        sample_size=r["sample_size"],
+        pool_size=pool,
+        concurrency=max(1, min(req.concurrency, 32)),
+        force_refresh=req.force_refresh,
+        web_lookup=r["web_lookup"],
+        skip_bots=r["skip_bots"],
+        selection=r["selection"],
+    )
     jid = engine.new_job()
-    asyncio.create_task(engine.run_analysis(jid, req.handle, req.niche, _settings_from(req)))
+    asyncio.create_task(engine.run_analysis(jid, req.handle, req.niche, settings))
     return {"job_id": jid}
 
 

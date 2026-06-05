@@ -115,8 +115,16 @@ def follower_to_xml(f: dict) -> str:
         f"<favourites_count>{f.get('favourites_count',0)}</favourites_count>\n"
         f"<created_at>{f.get('created_at','') or ''}</created_at>\n"
         f"<verified>{_bool(f.get('verified'))}</verified>\n"
+        f"{_tweets_block(f.get('tweets'))}"
         "</follower>"
     )
+
+
+def _tweets_block(tweets) -> str:
+    if not tweets:
+        return ""
+    lines = "\n".join(f"- {t}" for t in tweets[:12])
+    return f"<recent_tweets>\n{lines}\n</recent_tweets>\n"
 
 
 def user_prompt(f: dict, web_context: str | None = None, note: str | None = None) -> str:

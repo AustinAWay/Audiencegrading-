@@ -51,6 +51,13 @@ DB_PATH: Path = Path(os.getenv("NICHEFIT_DB", str(ROOT / "nichefit.db")))
 APIFY_ACTOR_ID: str = os.getenv(
     "APIFY_ACTOR_ID", "kaitoeasyapi/premium-x-follower-scraper-following-data"
 )
+# Tweet scraper — used to pull a single person's profile + recent tweets (the
+# tweet objects embed the author's full profile: bio, name, counts, verified).
+APIFY_TWEET_ACTOR: str = os.getenv(
+    "APIFY_TWEET_ACTOR", "kaitoeasyapi/twitter-x-data-tweet-scraper-pay-per-result-cheapest"
+)
+PERSON_TWEETS: int = int(os.getenv("PERSON_TWEETS", "20"))
+APIFY_TWEET_COST_PER_1000: float = float(os.getenv("APIFY_TWEET_COST_PER_1000", "0.25"))
 APIFY_BASE_URL: str = "https://api.apify.com/v2"
 
 # --------------------------------------------------------------------------- #
@@ -114,7 +121,7 @@ EST_ANALYZABLE_FRACTION: float = float(os.getenv("EST_ANALYZABLE_FRACTION", "0.5
 # Note: pool_size ("scan depth") is taken from the request so the user can scan
 # deep enough to cover their account; presets only set sample/research/selection.
 FULL_MODE_SAMPLE: int = 120
-TOP_MODE_SAMPLE: int = 50    # kept modest so a researched run fits a small budget
+TOP_MODE_SAMPLE: int = 100   # the top 100 followers by reach
 
 MODE_PRESETS: dict = {
     "full": {"sample_size": FULL_MODE_SAMPLE, "web_lookup": False, "skip_bots": True, "selection": "random"},
