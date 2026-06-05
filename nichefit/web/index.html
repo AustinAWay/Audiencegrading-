@@ -95,10 +95,13 @@ function App() {
   const [handle, setHandle] = useState("");
   const [niche, setNiche] = useState("");
   const [custom, setCustom] = useState("");
-  const [sample, setSample] = useState(200);
+  const [sample, setSample] = useState(100);
+  const [scanDepth, setScanDepth] = useState(3000);
   const [concurrency, setConcurrency] = useState(8);
-  const [webLookup, setWebLookup] = useState(false);
+  const [webLookup, setWebLookup] = useState(true);
+  const [skipBots, setSkipBots] = useState(true);
   const [forceRefresh, setForceRefresh] = useState(false);
+  const [mode, setMode] = useState("custom");
   const [est, setEst] = useState(null);
   const [stage, setStage] = useState("form"); // form | confirm | running | done
   const [progress, setProgress] = useState(null);
@@ -110,7 +113,8 @@ function App() {
     fetch("/api/config").then(r=>r.json()).then(c=>{
       setCfg(c);
       setNiche(c.niches[0]);
-      setSample(c.mock.apify ? 200 : c.default_sample_size);
+      setSample(c.default_sample_size);
+      setScanDepth(c.default_pool_size);
       setConcurrency(c.default_concurrency);
     });
     return () => clearInterval(pollRef.current);
@@ -118,12 +122,13 @@ function App() {
 
   const activeNiche = () => niche === "__custom__" ? custom.trim() : niche;
 
-  async function getEstimate() {
+  async function getEstimate(selectedMode = "custom") {
     setError(null);
     if (!handle.trim()) { setError("Paste an X link or @handle."); return; }
     if (!activeNiche()) { setError("Pick or type a niche."); return; }
+    setMode(selectedMode);
     const r = await fetch("/api/estimate", { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ handle, niche: activeNiche(), sample_size: +sample, web_lookup: webLookup, force_refresh: forceRefresh })});
+      body: JSON.stringify({ handle, niche: activeNiche(), mode: selectedMode, sample_size: +sample, pool_size: +scanDepth, web_lookup: webLookup, skip_bots: skipBots, force_refresh: forceRefresh })});
     if (!r.ok) { setError((await r.json()).detail || "Estimate failed."); return; }
     setEst(await r.json());
     setStage("confirm");
@@ -132,7 +137,7 @@ function App() {
   async function startRun() {
     setError(null); setResult(null); setProgress(null); setStage("running");
     const r = await fetch("/api/analyze", { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ handle, niche: activeNiche(), sample_size:+sample, concurrency:+concurrency, web_lookup:webLookup, force_refresh:forceRefresh })});
+      body: JSON.stringify({ handle, niche: activeNiche(), mode, sample_size:+sample, pool_size:+scanDepth, concurrency:+concurrency, web_lookup:webLookup, skip_bots:skipBots, force_refresh:forceRefresh })});
     if (!r.ok) { setError((await r.json()).detail || "Failed to start."); setStage("confirm"); return; }
     const { job_id } = await r.json();
     pollRef.current = setInterval(async () => {
@@ -158,6 +163,14 @@ function App() {
         </div>
         <span className="text-xs text-slate-500">model: {cfg.model}</span>
       </header>
+
+      <div className="rounded-lg p-3 mb-5 text-sm border border-amber-400/30 bg-amber-400/10 text-amber-200">
+        🧪 <b>Demo / proof-of-concept.</b> This shows what's possible — scores are
+        <b> illustrative, not validated</b>. The rubric, bot filter, and especially
+        the follower sampling (limited by the data source, which returns newest
+        followers first) all need real fine-tuning before relying on results.
+        Treat everything here as directional.
+      </div>
 
       {mock && (
         <div className="glass rounded-lg p-3 mb-5 text-sm text-amber-300">
@@ -190,31 +203,58 @@ function App() {
               )}
             </div>
             <div>
-              <label className="block text-sm mb-1 text-slate-300">Sample size (followers to score)</label>
+              <label className="block text-sm mb-1 text-slate-300">Sample size (real followers to deeply analyze)</label>
               <input type="number" min="1" max={cfg.hard_cap} value={sample} onChange={e=>setSample(e.target.value)}
                 className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
-              <p className="text-xs text-slate-500 mt-1">Default {fmt(cfg.default_sample_size)}. Start small (~200) for your first run.</p>
+              <p className="text-xs text-slate-500 mt-1">How many real (non-bot) followers get deep analysis / research.</p>
             </div>
           </div>
-          <div className="grid md:grid-cols-3 gap-4 items-end">
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm mb-1 text-slate-300">Scan depth (followers to scrape)</label>
+              <input type="number" min="200" max={cfg.hard_cap} value={scanDepth} onChange={e=>setScanDepth(e.target.value)}
+                className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
+              <p className="text-xs text-amber-300/80 mt-1">⚠️ The X API returns followers <b>newest-first</b>, and recent followers are mostly bots. To reach real / high-reach followers who followed you earlier, set this at or above your <b>total follower count</b>.</p>
+            </div>
             <div>
               <label className="block text-sm mb-1 text-slate-300">Concurrency</label>
               <input type="number" min="1" max="32" value={concurrency} onChange={e=>setConcurrency(e.target.value)}
                 className="w-full bg-black/30 rounded-lg px-4 py-3 outline-none border border-white/10 focus:border-fuchsia-400"/>
             </div>
+          </div>
+          <div className="grid md:grid-cols-3 gap-4 items-end">
             <label className="flex items-center gap-2 text-sm text-slate-300 py-3">
               <input type="checkbox" checked={webLookup} onChange={e=>setWebLookup(e.target.checked)} className="w-4 h-4"/>
-              Web lookup for top accounts
+              Research each follower (web)
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 py-3">
+              <input type="checkbox" checked={skipBots} onChange={e=>setSkipBots(e.target.checked)} className="w-4 h-4"/>
+              Skip bots (free filter)
             </label>
             <label className="flex items-center gap-2 text-sm text-slate-300 py-3">
               <input type="checkbox" checked={forceRefresh} onChange={e=>setForceRefresh(e.target.checked)} className="w-4 h-4"/>
               Force refresh (ignore cache)
             </label>
           </div>
-          <button onClick={getEstimate}
+          <button onClick={()=>getEstimate("custom")}
             className="w-full bg-fuchsia-500 hover:bg-fuchsia-400 transition rounded-lg py-3 font-semibold text-black">
             Estimate cost →
           </button>
+          <div className="grid md:grid-cols-2 gap-3">
+            <button onClick={()=>getEstimate("full")}
+              className="rounded-lg py-3 font-semibold border border-fuchsia-400/40 bg-fuchsia-400/10 hover:bg-fuchsia-400/20 transition text-fuchsia-200">
+              ⚡ Full account (cheap estimate)
+            </button>
+            <button onClick={()=>getEstimate("top")}
+              className="rounded-lg py-3 font-semibold border border-indigo-400/40 bg-indigo-400/10 hover:bg-indigo-400/20 transition text-indigo-200">
+              ★ Top followers by reach (deep)
+            </button>
+          </div>
+          <p className="text-xs text-slate-500">
+            Both scan your <b>{fmt(scanDepth)}</b> most-recent followers — set scan depth ≥ your total follower count to truly scan everyone.
+            <b> Full account</b>: random sample, measures the bot %, and the bot % lowers the overall score (no web research — cheap).
+            <b> Top followers</b>: ranks everyone scanned by their own follower count, then researches the top {/* sample */}~50 (who they are + recent posts) and scores them.
+          </p>
         </div>
       )}
 
@@ -224,13 +264,21 @@ function App() {
           <h2 className="text-xl font-semibold">Confirm run</h2>
           <p className="text-slate-300">Analyzing <span className="font-mono text-fuchsia-300">@{est.handle}</span> for the
             <span className="text-fuchsia-300"> "{activeNiche()}"</span> niche.</p>
+          {est.mode && est.mode !== "custom" && (
+            <div className="text-sm text-slate-300">
+              Mode: <b className="text-fuchsia-200">{est.mode === "full" ? "Full account (cheap estimate)" : "Top 100 by reach (deep)"}</b>
+              {" · "}{est.selection === "top" ? "highest-reach followers" : "random sample"}
+              {" · "}{est.web_lookup ? "with web research" : "no web research"}
+            </div>
+          )}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="Followers to scrape" value={fmt(est.to_scrape)} sub={est.cached_followers?`${fmt(est.cached_followers)} cached`:""}/>
-            <Stat label="Followers to score" value={fmt(est.to_score)} sub={est.cached_scores?`${fmt(est.cached_scores)} cached`:""}/>
+            <Stat label="Pool scraped" value={fmt(est.to_scrape)} sub={est.cached_followers?`${fmt(est.cached_followers)} cached`:"bot-filtered free"}/>
+            <Stat label="Real analyzed (est.)" value={`~${fmt(est.to_score)}`} sub={est.skip_bots?"after bot filter":""}/>
             <Stat label="Apify cost" value={usd(est.apify_cost)} sub={est.apify_mock?"mock — free":""}/>
             <Stat label="Haiku cost" value={usd(est.haiku_cost)} sub={est.anthropic_mock?"mock — free":""}/>
           </div>
-          {est.web_lookups>0 && <p className="text-sm text-slate-400">+ up to {est.web_lookups} web lookups ({usd(est.web_cost)})</p>}
+          {est.web_lookups>0 && <p className="text-sm text-slate-400">+ ~{est.web_lookups} web research lookups ({usd(est.web_cost)})</p>}
+          <p className="text-xs text-slate-500">Estimate assumes ~half the pool survives the bot filter; actual cost is often lower. Bots are scored free.</p>
           <div className="flex items-center justify-between border-t border-white/10 pt-4">
             <span className="text-slate-300">Estimated total</span>
             <span className="text-2xl font-bold text-fuchsia-300">{usd(est.total_cost)}</span>
@@ -275,8 +323,15 @@ function App() {
           <div className="grid md:grid-cols-3 gap-5">
             <div className="glass rounded-2xl p-6 flex flex-col items-center justify-center">
               <Gauge value={result.audience_score}/>
-              <div className="mt-3 text-center text-sm text-slate-400">
-                influence-weighted: <span className="text-slate-200 font-semibold">{result.weighted_score}</span> / 100
+              <div className="mt-2 text-center text-xs text-slate-400">{result.score_basis || "audience score"}</div>
+              {result.selection !== "top" && (
+                <div className="mt-2 text-center text-sm text-slate-400">
+                  real followers avg: <span className="text-slate-200 font-semibold">{result.real_audience_score}</span> / 100
+                </div>
+              )}
+              <div className="mt-3 text-center">
+                <div className="text-2xl font-bold text-red-300">{result.bot_rate}%</div>
+                <div className="text-xs text-slate-400">bots / inactive (of {fmt(result.pool_size)} scanned)</div>
               </div>
             </div>
             <div className="glass rounded-2xl p-6 md:col-span-2">
@@ -289,14 +344,26 @@ function App() {
 
           <div className="grid md:grid-cols-3 gap-5">
             <div className="glass rounded-2xl p-6">
-              <h3 className="font-semibold mb-3 text-slate-300">Tier distribution</h3>
+              <h3 className="font-semibold mb-3 text-slate-300">Tier distribution <span className="text-xs text-slate-500">(real sample)</span></h3>
               <Donut tiers={result.tiers}/>
+              {result.projected && (
+                <div className="mt-4 pt-3 border-t border-white/10">
+                  <div className="text-xs text-slate-400 mb-2">Projected across the full account:</div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                    <span><span className="text-red-300 font-semibold">{result.projected.Bots}%</span> bots</span>
+                    {["A","B","C","D"].map(t=>(
+                      <span key={t}><span className="font-semibold" style={{color:TIER_COLORS[t]}}>{result.projected[t]}%</span> {t}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="glass rounded-2xl p-6 md:col-span-2">
               <h3 className="font-semibold mb-2 text-slate-300">Summary</h3>
               <p className="text-slate-200 leading-relaxed">{result.summary}</p>
               <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-400">
-                <span>scored: {fmt(result.scored)}</span>
+                <span>analyzed: {fmt(result.analyzed)} real of {fmt(result.pool_size)} pool</span>
+                <span>bots flagged: {fmt(result.flagged_bots)} ({result.bot_rate}%)</span>
                 <span>avg confidence: {result.avg_confidence}</span>
                 <span>skipped: {fmt(result.skipped)}</span>
                 <span>spent: {usd(result.spend.total)} (apify {usd(result.spend.apify)} · haiku {usd(result.spend.anthropic)})</span>
@@ -312,11 +379,11 @@ function App() {
                   <tr>
                     <th className="py-2 pr-3">#</th><th className="pr-3">Handle</th><th className="pr-3">Followers</th>
                     <th className="pr-2">Total</th><th className="pr-2">Tier</th>
-                    <th className="pr-2" title="Niche relevance / 35">Rel</th>
-                    <th className="pr-2" title="Influence / 25">Inf</th>
+                    <th className="pr-2" title="Niche relevance / 30">Rel</th>
+                    <th className="pr-2" title="Real-world influence / 35">Inf</th>
                     <th className="pr-2" title="Authority / 20">Aut</th>
-                    <th className="pr-2" title="Engagement / 10">Eng</th>
-                    <th className="pr-2" title="Authenticity / 10">Acc</th>
+                    <th className="pr-2" title="Content quality / 8">Con</th>
+                    <th className="pr-2" title="Authenticity / 7">Acc</th>
                     <th>Why</th>
                   </tr>
                 </thead>
@@ -348,6 +415,11 @@ function App() {
           </button>
         </div>
       )}
+
+      <footer className="mt-10 pt-5 border-t border-white/10 text-center text-xs text-slate-500">
+        🧪 NicheFit is a demo / proof-of-concept. Scores are illustrative and not a validated product —
+        the rubric, prompts, bot heuristics, and follower sampling would all need further fine-tuning for production use.
+      </footer>
     </div>
   );
 }

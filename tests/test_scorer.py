@@ -17,20 +17,23 @@ def test_extract_json_returns_none_on_garbage():
 
 def test_coerce_clamps_out_of_range_and_recomputes_total_and_tier():
     raw = {
-        "niche_relevance": 999,   # over max (35) -> clamp
+        "niche_relevance": 999,   # over max -> clamp to band max
         "influence_reach": -5,    # under 0 -> clamp
         "authority": 20,
-        "engagement_quality": 10,
-        "authenticity": 10,
+        "engagement_quality": 99,
+        "authenticity": 99,
         "total": 3,               # wrong -> recomputed
         "tier": "D",              # wrong -> recomputed
         "confidence": 5.0,        # over 1 -> clamp
     }
     out = scorer._coerce_and_validate(raw, FOLLOWER)
-    assert out["niche_relevance"] == 35
+    maxes = {c.key: c.max_points for c in config.RUBRIC.criteria}
+    assert out["niche_relevance"] == maxes["niche_relevance"]
     assert out["influence_reach"] == 0
-    assert out["total"] == 35 + 0 + 20 + 10 + 10  # == 75
-    assert out["tier"] == config.RUBRIC.tier_for(75) == "B"
+    assert out["engagement_quality"] == maxes["engagement_quality"]
+    expected_total = maxes["niche_relevance"] + 0 + 20 + maxes["engagement_quality"] + maxes["authenticity"]
+    assert out["total"] == expected_total
+    assert out["tier"] == config.RUBRIC.tier_for(expected_total)
     assert out["confidence"] == 1.0
     assert out["screen_name"] == "x"
 
@@ -42,6 +45,25 @@ def test_heuristic_scores_are_valid_records():
         assert s["tier"] in ("A", "B", "C", "D")
         for c in config.RUBRIC.criteria:
             assert 0 <= s[c.key] <= c.max_points
+
+
+def test_is_junk_flags_spam_and_empty_but_not_real():
+    spam = {"description": "Follow back! DM for promo", "statuses_count": 100}
+    empty = {"description": "", "name": "", "statuses_count": 0, "status": None}
+    real = next(f for f in MOCK_FOLLOWERS if f["screen_name"] == "dharmesh")
+    verified_sparse = {"description": "", "statuses_count": 0, "status": None, "verified": True}
+    assert scorer.is_junk(spam) is True
+    assert scorer.is_junk(empty) is True
+    assert scorer.is_junk(real) is False
+    assert scorer.is_junk(verified_sparse) is False  # verified is never junk
+
+
+def test_junk_score_is_free_tier_d():
+    f = {"screen_name": "bot1", "name": "bot", "followers_count": 0}
+    s = scorer.junk_score(f)
+    assert s["bot"] is True
+    assert s["total"] == 0
+    assert s["tier"] == "D"
 
 
 def test_heuristic_ranks_expert_above_bot():

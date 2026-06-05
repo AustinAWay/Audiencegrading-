@@ -24,8 +24,6 @@ def test_aggregate_scores_and_tiers():
     assert agg["scored"] == 3
     assert agg["audience_score"] == round((90 + 70 + 30) / 3, 1)
     assert agg["tiers"] == {"A": 1, "B": 1, "C": 0, "D": 1}
-    # influence weighting lifts the score (the 90 has the most followers)
-    assert agg["weighted_score"] >= agg["audience_score"]
     assert agg["top_followers"][0]["total"] == 90
 
 
@@ -45,10 +43,39 @@ async def test_full_run_in_mock_mode():
     job = engine.JOBS[jid]
     assert job["status"] == "done", job["error"]
     result = job["result"]
+    # the deep-analyzed real sample is capped at sample_size
+    assert result["analyzed"] == 20
     assert result["scored"] == 20
     assert 0 <= result["audience_score"] <= 100
-    assert sum(result["tiers"].values()) == 20
+    assert sum(result["tiers"].values()) == 20  # tiers cover the real sample
     assert len(result["top_followers"]) <= 25
+    # bots were detected for free and reported, not deeply analyzed
+    assert result["flagged_bots"] >= 1
+    assert 0 <= result["bot_rate"] <= 100
+    assert result["pool_size"] > result["analyzed"]
     assert result["summary"]
     # mock mode never spends
     assert result["spend"]["total"] == 0.0
+    # full-account projection sums to ~100% (bots + tiers)
+    proj = result["projected"]
+    assert abs(sum(proj.values()) - 100) < 2.0
+    # random/whole-account mode: the bot rate drags the headline below the real avg
+    assert result["audience_score"] <= result["real_audience_score"]
+    if result["bot_rate"] > 0:
+        assert result["audience_score"] < result["real_audience_score"]
+
+
+async def test_top_selection_picks_highest_reach():
+    jid = engine.new_job()
+    settings = config.Settings(
+        sample_size=5, pool_size=200, selection="top",
+        web_lookup=False, force_refresh=True,
+    )
+    await engine.run_analysis(jid, "@whoever", "tech / SaaS", settings)
+    result = engine.JOBS[jid]["result"]
+    assert result["selection"] == "top"
+    assert result["analyzed"] == 5
+    # the highest-reach real follower in the mock cast has millions of followers
+    assert result["top_followers"][0]["followers_count"] >= 1_000_000
+    # top mode is NOT bot-adjusted — the elite cohort's own average stands
+    assert result["audience_score"] == result["real_audience_score"]

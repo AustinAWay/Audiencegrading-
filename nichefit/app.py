@@ -54,8 +54,11 @@ app = FastAPI(title="NicheFit", version="1.0.0", lifespan=lifespan)
 class EstimateReq(BaseModel):
     handle: str
     niche: str
-    sample_size: int = config.DEFAULT_SAMPLE_SIZE
+    mode: str = "custom"                                  # "custom" | "full" | "top"
+    sample_size: int = config.DEFAULT_SAMPLE_SIZE        # real followers to deeply analyze
+    pool_size: int = config.DEFAULT_POOL_SIZE            # followers to scrape + bot-filter
     web_lookup: bool = config.WEB_LOOKUP_ENABLED_DEFAULT
+    skip_bots: bool = config.BOT_FILTER_ENABLED_DEFAULT
     force_refresh: bool = False
 
 
@@ -63,12 +66,38 @@ class AnalyzeReq(EstimateReq):
     concurrency: int = config.DEFAULT_CONCURRENCY
 
 
+def _clamp_sizes(sample_size: int, pool_size: int) -> tuple[int, int]:
+    """Sample is bounded by the hard cap; the pool is at least the sample size."""
+    sample = max(1, min(sample_size, config.HARD_CAP_SAMPLE_SIZE))
+    pool = max(sample, min(pool_size, config.HARD_CAP_SAMPLE_SIZE))
+    return sample, pool
+
+
+def _resolve(req: EstimateReq) -> dict:
+    """Apply a one-click mode preset, falling back to the request's own fields."""
+    preset = config.MODE_PRESETS.get(req.mode, {})
+    sample = preset.get("sample_size", req.sample_size)
+    pool = preset.get("pool_size", req.pool_size)
+    sample, pool = _clamp_sizes(sample, pool)
+    return {
+        "sample_size": sample,
+        "pool_size": pool,
+        "web_lookup": preset.get("web_lookup", req.web_lookup),
+        "skip_bots": preset.get("skip_bots", req.skip_bots),
+        "selection": preset.get("selection", "random"),
+    }
+
+
 def _settings_from(req: AnalyzeReq) -> config.Settings:
+    r = _resolve(req)
     return config.Settings(
-        sample_size=max(1, min(req.sample_size, config.HARD_CAP_SAMPLE_SIZE)),
+        sample_size=r["sample_size"],
+        pool_size=r["pool_size"],
         concurrency=max(1, min(req.concurrency, 32)),
         force_refresh=req.force_refresh,
-        web_lookup=req.web_lookup,
+        web_lookup=r["web_lookup"],
+        skip_bots=r["skip_bots"],
+        selection=r["selection"],
     )
 
 
@@ -80,6 +109,7 @@ async def get_config():
     return {
         "niches": config.PRELOADED_NICHES,
         "default_sample_size": config.DEFAULT_SAMPLE_SIZE,
+        "default_pool_size": config.DEFAULT_POOL_SIZE,
         "hard_cap": config.HARD_CAP_SAMPLE_SIZE,
         "default_concurrency": config.DEFAULT_CONCURRENCY,
         "model": config.HAIKU_MODEL,
@@ -97,17 +127,21 @@ async def post_estimate(req: EstimateReq):
     handle = apify.parse_handle(req.handle)
     if not handle:
         raise HTTPException(400, "Could not parse an X handle from the input.")
-    sample = max(1, min(req.sample_size, config.HARD_CAP_SAMPLE_SIZE))
+    r = _resolve(req)
+    sample, pool = r["sample_size"], r["pool_size"]
 
     cached_followers = 0 if req.force_refresh else len(db.get_cached_followers(handle))
     cached_scores = 0 if req.force_refresh else len(db.get_cached_scores(handle, req.niche))
     est = cost_mod.estimate(
-        sample, req.web_lookup,
-        cached_followers=min(cached_followers, sample),
+        sample, pool, r["web_lookup"], skip_bots=r["skip_bots"],
+        cached_followers=min(cached_followers, pool),
         cached_scores=min(cached_scores, sample),
     )
     est["handle"] = handle
     est["niche"] = req.niche
+    est["mode"] = req.mode
+    est["selection"] = r["selection"]
+    est["web_lookup"] = r["web_lookup"]
     return est
 
 

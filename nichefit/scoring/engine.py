@@ -9,14 +9,14 @@ crashes on a bad run.
 from __future__ import annotations
 
 import asyncio
-import math
+import random
 import time
 import uuid
 
 from .. import config
 from ..data import apify
 from ..data import cache as db
-from .scorer import Scorer
+from .scorer import Scorer, is_junk, junk_score
 
 # job_id -> live job state (read by the /progress endpoint)
 JOBS: dict[str, dict] = {}
@@ -56,18 +56,13 @@ def aggregate(handle: str, niche: str, scores: list[dict]) -> dict:
     if n == 0:
         return {
             "handle": handle, "niche": niche, "scored": 0,
-            "audience_score": 0, "weighted_score": 0,
+            "audience_score": 0,
             "criteria_avg": {}, "tiers": {"A": 0, "B": 0, "C": 0, "D": 0},
             "top_followers": [], "avg_confidence": 0,
         }
 
     totals = [s["total"] for s in scores]
     audience = sum(totals) / n
-
-    # Influence-weighted average: weight = log10(followers + 1).
-    weights = [math.log10((s.get("followers_count", 0) or 0) + 1) for s in scores]
-    wsum = sum(weights) or 1.0
-    weighted = sum(t * w for t, w in zip(totals, weights)) / wsum
 
     criteria_avg = {}
     for c in config.RUBRIC.criteria:
@@ -90,16 +85,11 @@ def aggregate(handle: str, niche: str, scores: list[dict]) -> dict:
         "niche": niche,
         "scored": n,
         "audience_score": round(audience, 1),
-        "weighted_score": round(weighted, 1),
         "criteria_avg": criteria_avg,
         "tiers": tiers,
         "top_followers": top,
         "avg_confidence": round(sum(s.get("confidence", 0) for s in scores) / n, 2),
     }
-
-
-def _qualifies_for_lookup(f: dict) -> bool:
-    return (f.get("followers_count", 0) or 0) >= config.WEB_LOOKUP_MIN_FOLLOWERS
 
 
 # --------------------------------------------------------------------------- #
@@ -121,15 +111,15 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
             db.clear_scores(handle, niche)
             _log(jid, "Force refresh: cleared cached followers + scores.")
 
-        # ---- 1. followers (cache first) ----------------------------------- #
+        # ---- 1. scrape a POOL of followers (cheap; cache first) ----------- #
         job["phase"] = "Scraping followers"
         cached = db.get_cached_followers(handle)
-        if len(cached) >= settings.sample_size:
-            followers = cached[: settings.sample_size]
+        if len(cached) >= settings.pool_size:
+            followers = cached[: settings.pool_size]
             _log(jid, f"Using {len(followers)} cached followers (no Apify spend).")
         else:
             followers = await apify.fetch_followers(
-                handle, settings.sample_size, progress=lambda m: _log(jid, m)
+                handle, settings.pool_size, progress=lambda m: _log(jid, m)
             )
             db.save_followers(handle, followers)
             if not config.APIFY_MOCK:
@@ -137,67 +127,108 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
                     len(followers) / 1000.0 * config.APIFY_COST_PER_1000_FOLLOWERS, 4
                 )
 
-        followers = followers[: settings.sample_size]
+        followers = followers[: settings.pool_size]
         job["scraped"] = len(followers)
-        job["total"] = len(followers)
         if not followers:
             raise RuntimeError("No followers returned. Check the handle / Apify token.")
-        _log(jid, f"Scoring {len(followers)} followers (concurrency {settings.concurrency})…")
 
-        # ---- 2. score (cache first, then concurrent Haiku) ---------------- #
-        job["phase"] = "Scoring followers"
+        # ---- 2. free bot/junk filter over the whole pool ------------------ #
+        job["phase"] = "Filtering bots"
         cached_scores = db.get_cached_scores(handle, niche)
         scorer = Scorer(niche, settings.concurrency)
 
-        results: list[dict] = []
-        to_score: list[dict] = []
+        bots: list[dict] = []            # flagged fake/inactive (free)
+        # real candidates carried as (followers_count, kind, obj); kind: cached|new
+        real_candidates: list[tuple] = []
         for f in followers:
             sn = (f.get("screen_name") or "").lower()
             if sn in cached_scores:
-                results.append(cached_scores[sn])
-                job["scored"] += 1
+                rec = cached_scores[sn]
+                if rec.get("bot"):
+                    bots.append(rec)
+                else:
+                    real_candidates.append((rec.get("followers_count", 0), "cached", rec))
+            elif settings.skip_bots and is_junk(f):
+                rec = junk_score(f)
+                db.save_score(handle, niche, f.get("screen_name", ""), rec)
+                bots.append(rec)
             else:
-                to_score.append(f)
-        if results:
-            _log(jid, f"{len(results)} followers already scored (cache hit).")
+                real_candidates.append((f.get("followers_count", 0), "new", f))
+        _log(jid, f"Pool of {len(followers)}: {len(bots)} flagged as bots/inactive "
+                  f"(free), {len(real_candidates)} look real.")
 
-        # optional web-lookup gate: top accounts by follower_count
-        lookup_targets = set()
-        if settings.web_lookup:
-            ranked = sorted(to_score, key=lambda f: f.get("followers_count", 0), reverse=True)
-            cap = min(
-                config.WEB_LOOKUP_MAX_PER_RUN,
-                max(1, int(len(followers) * config.WEB_LOOKUP_TOP_PERCENTILE)),
-            )
-            for f in ranked[:cap]:
-                if _qualifies_for_lookup(f):
-                    lookup_targets.add((f.get("screen_name") or "").lower())
-            if lookup_targets:
-                _log(jid, f"Web lookup enabled for {len(lookup_targets)} top account(s).")
+        # ---- 3. choose which real followers to deeply analyze ------------- #
+        # "top" -> the highest-reach followers; "random" -> a representative sample.
+        # Bots are skipped for free, so the sample tops up past them to stay full.
+        if settings.selection == "top":
+            real_candidates.sort(key=lambda t: t[0], reverse=True)
+        else:
+            random.shuffle(real_candidates)
+        chosen = real_candidates[: settings.sample_size]
+
+        real_results: list[dict] = [obj for _, kind, obj in chosen if kind == "cached"]
+        to_analyze: list[dict] = [obj for _, kind, obj in chosen if kind == "new"]
+
+        job["total"] = len(bots) + len(chosen)
+        job["scored"] = len(bots) + len(real_results)
+
+        research = settings.web_lookup
+        job["phase"] = "Scoring followers"
+        if to_analyze:
+            extra = " with web research" if research else " (no research — cheap)"
+            pick = "top-reach" if settings.selection == "top" else "random"
+            _log(jid, f"Deeply analyzing {len(to_analyze)} {pick} real follower(s){extra} "
+                      f"(concurrency {settings.concurrency})…")
 
         async def worker(f: dict) -> None:
-            web_ctx = None
-            sn = (f.get("screen_name") or "").lower()
-            if sn in lookup_targets:
-                web_ctx = await scorer.web_context(f)
+            web_ctx = await scorer.web_context(f) if research else None
             s = await scorer.score_one(f, web_context=web_ctx)
             if s is None:
                 job["skipped"] += 1
                 return
-            results.append(s)
+            real_results.append(s)
             db.save_score(handle, niche, f.get("screen_name", ""), s)
             job["scored"] += 1
             job["spend"]["anthropic"] = round(scorer.spend_usd, 4)
             job["spend"]["total"] = round(job["spend"]["apify"] + scorer.spend_usd, 4)
 
-        await asyncio.gather(*(worker(f) for f in to_score))
+        await asyncio.gather(*(worker(f) for f in to_analyze))
 
-        if not results:
-            raise RuntimeError("All followers failed to score.")
+        if len(bots) + len(real_results) == 0:
+            raise RuntimeError("No followers could be scored. Check the handle / tokens.")
 
-        # ---- 3. aggregate + summary --------------------------------------- #
+        # ---- 4. aggregate (quality over the real sample) + bot stats ------ #
         job["phase"] = "Writing summary"
-        agg = aggregate(handle, niche, results)
+        pool = len(followers)
+        agg = aggregate(handle, niche, real_results)
+        agg["flagged_bots"] = len(bots)
+        agg["bot_rate"] = round(len(bots) / max(1, pool) * 100, 1)
+        agg["pool_size"] = pool
+        agg["analyzed"] = len(real_results)
+        agg["selection"] = settings.selection
+        agg["researched"] = research
+
+        # The mean over the real (non-bot) accounts.
+        agg["real_audience_score"] = agg["audience_score"]
+        if settings.selection == "top":
+            # "Top followers": the headline is the quality of the elite cohort
+            # itself, so the bot rate does not drag it down.
+            agg["score_basis"] = "top followers by reach"
+        else:
+            # "Whole account": bots count against the audience — the bot rate
+            # pulls the headline score down (real_avg x non-bot share).
+            real_frac = 1 - agg["bot_rate"] / 100.0
+            agg["audience_score"] = round(agg["real_audience_score"] * real_frac, 1)
+            agg["score_basis"] = "whole account (bot-adjusted)"
+
+        # Project the bot rate + real-audience mix across the WHOLE account.
+        real_n = len(real_results) or 1
+        real_frac = 1 - agg["bot_rate"] / 100.0
+        projected = {"Bots": agg["bot_rate"]}
+        for t in ("A", "B", "C", "D"):
+            projected[t] = round(agg["tiers"].get(t, 0) / real_n * real_frac * 100, 1)
+        agg["projected"] = projected
+
         agg["summary"] = await scorer.write_summary(handle, agg)
         agg["skipped"] = job["skipped"]
         agg["spend"] = {
@@ -217,7 +248,8 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
         job["result"] = agg
         job["phase"] = "Done"
         job["status"] = "done"
-        _log(jid, f"Done. Audience score {agg['audience_score']}/100.")
+        _log(jid, f"Done. Real-audience score {agg['audience_score']}/100; "
+                  f"{agg['bot_rate']}% flagged as bots.")
     except Exception as e:  # surface, don't crash the server
         job["status"] = "error"
         job["error"] = str(e)

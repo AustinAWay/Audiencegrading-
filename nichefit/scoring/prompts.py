@@ -24,8 +24,13 @@ def system_prompt(niche: str) -> str:
         "scoring is consistent across users.\n\n"
         f"{config.rubric_as_prompt_text()}\n\n"
         "Rules:\n"
-        "- Score only on the evidence provided. If fields are missing, score on "
-        "what is available and lower your `confidence`.\n"
+        "- Use the web research provided (if any) to judge real-world influence "
+        "and authority — who this person actually is.\n"
+        "- Judge influence by WHO THE PERSON IS, never by follower count.\n"
+        "- A major real-world figure (founder, executive, investor, billionaire, "
+        "public figure) is a valuable audience member even if they are not in the "
+        "niche — score their influence on its merits.\n"
+        "- If evidence is thin, score on what you have and lower your `confidence`.\n"
         "- `total` MUST equal the sum of the five criteria.\n"
         "- `tier` MUST follow the tier thresholds above.\n"
         "- Reason briefly first, then output the JSON.\n"
@@ -44,23 +49,21 @@ _FEWSHOT_HIGH = (
     "<bio>Founder/CTO @HubSpot. I build SaaS and software for B2B marketers.</bio>\n"
     "<location>Boston, MA</location>\n"
     "<links>https://hubspot.com</links>\n"
-    "<followers_count>480000</followers_count>\n"
     "<friends_count>2500</friends_count>\n"
-    "<listed_count>7800</listed_count>\n"
     "<statuses_count>28000</statuses_count>\n"
     "<favourites_count>12000</favourites_count>\n"
     "<created_at>Wed Jun 11 09:30:00 +0000 2008</created_at>\n"
     "<verified>true</verified>\n"
-    "<latest_tweet likes=\"5200\" retweets=\"410\">The best SaaS growth lever nobody "
-    "talks about: making your free tier genuinely useful.</latest_tweet>\n"
-    "</follower>"
+    "</follower>\n"
+    "<web_context>Dharmesh Shah is the co-founder and CTO of HubSpot, a public "
+    "company worth tens of billions; a prominent SaaS angel investor and author.</web_context>"
 )
 _FEWSHOT_HIGH_OUT = (
-    '{"niche_relevance": 34, "influence_reach": 24, "authority": 19, '
-    '"engagement_quality": 9, "authenticity": 10, "total": 96, "tier": "A", '
-    '"confidence": 0.95, "reasoning": "Founder/CTO of HubSpot — a marquee SaaS '
-    'authority with massive verified reach, strong per-follower engagement, and a '
-    'long active account."}'
+    '{"niche_relevance": 28, "influence_reach": 31, "authority": 19, '
+    '"engagement_quality": 7, "authenticity": 7, "total": 92, "tier": "A", '
+    '"confidence": 0.95, "reasoning": "Co-founder/CTO of HubSpot, a major SaaS '
+    'company — high real-world influence and authority, directly in the niche, '
+    'with a long active account."}'
 )
 
 _FEWSHOT_LOW = (
@@ -70,22 +73,21 @@ _FEWSHOT_LOW = (
     "<bio>Follow 4 follow! DM for promo. Crypto signals 100% accurate!!!</bio>\n"
     "<location></location>\n"
     "<links>http://sketchy.link/promo</links>\n"
-    "<followers_count>1200</followers_count>\n"
     "<friends_count>4900</friends_count>\n"
-    "<listed_count>1</listed_count>\n"
     "<statuses_count>88000</statuses_count>\n"
     "<favourites_count>3</favourites_count>\n"
     "<created_at>Wed Jan 03 01:00:00 +0000 2024</created_at>\n"
     "<verified>false</verified>\n"
-    "<latest_tweet likes=\"0\" retweets=\"0\">DM ME FOR PROMO follow back guaranteed</latest_tweet>\n"
-    "</follower>"
+    "</follower>\n"
+    "<web_context>No information found — appears to be an anonymous promo/spam "
+    "account.</web_context>"
 )
 _FEWSHOT_LOW_OUT = (
-    '{"niche_relevance": 3, "influence_reach": 4, "authority": 0, '
-    '"engagement_quality": 0, "authenticity": 0, "total": 7, "tier": "D", '
-    '"confidence": 0.9, "reasoning": "Spam/bot signature: follow-for-follow bio, '
-    'extreme following ratio, 88k tweets with near-zero engagement, brand-new '
-    'account — not a real niche member."}'
+    '{"niche_relevance": 2, "influence_reach": 1, "authority": 0, '
+    '"engagement_quality": 0, "authenticity": 0, "total": 3, "tier": "D", '
+    '"confidence": 0.9, "reasoning": "Spam/bot signature — follow-for-follow promo '
+    'bio, brand-new account, near-zero real activity, and no identifiable real-world '
+    'influence."}'
 )
 
 
@@ -94,16 +96,11 @@ def _bool(v) -> str:
 
 
 def follower_to_xml(f: dict) -> str:
-    """Render a follower as the labelled XML block the model scores against."""
-    status = f.get("status") or {}
-    tweet = (status.get("full_text") or "").replace("\n", " ").strip()
-    likes = status.get("favorite_count", 0)
-    rts = status.get("retweet_count", 0)
-    tweet_line = (
-        f'<latest_tweet likes="{likes}" retweets="{rts}">{tweet}</latest_tweet>'
-        if tweet
-        else "<latest_tweet>none available</latest_tweet>"
-    )
+    """Render a follower as the labelled XML block the model scores against.
+
+    Note: this data source does not include the follower's tweets, so there is no
+    tweet text — the model judges from the profile + web research + activity counts.
+    """
     return (
         "<follower>\n"
         f"<screen_name>{f.get('screen_name','')}</screen_name>\n"
@@ -111,14 +108,13 @@ def follower_to_xml(f: dict) -> str:
         f"<bio>{f.get('description','') or ''}</bio>\n"
         f"<location>{f.get('location','') or ''}</location>\n"
         f"<links>{f.get('url','') or ''}</links>\n"
-        f"<followers_count>{f.get('followers_count',0)}</followers_count>\n"
+        # follower_count / listed_count are intentionally omitted: influence is
+        # judged from who the person is (web research), not audience size.
         f"<friends_count>{f.get('friends_count',0)}</friends_count>\n"
-        f"<listed_count>{f.get('listed_count',0)}</listed_count>\n"
         f"<statuses_count>{f.get('statuses_count',0)}</statuses_count>\n"
         f"<favourites_count>{f.get('favourites_count',0)}</favourites_count>\n"
         f"<created_at>{f.get('created_at','') or ''}</created_at>\n"
         f"<verified>{_bool(f.get('verified'))}</verified>\n"
-        f"{tweet_line}\n"
         "</follower>"
     )
 
@@ -140,8 +136,8 @@ def user_prompt(f: dict, web_context: str | None = None) -> str:
     ]
     if web_context:
         parts.append(
-            "\nExternal web context about this person (use for the authority "
-            f"score):\n<web_context>{web_context}</web_context>"
+            "\nWeb research about this person (use it to judge real-world influence "
+            f"and authority):\n<web_context>{web_context}</web_context>"
         )
     parts.append("\nReason briefly, then output the strict JSON object.")
     return "\n".join(parts)

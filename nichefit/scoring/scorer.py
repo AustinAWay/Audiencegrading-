@@ -75,6 +75,41 @@ def _coerce_and_validate(raw: dict, f: dict) -> dict:
     out["screen_name"] = f.get("screen_name", "")
     out["name"] = f.get("name", "")
     out["followers_count"] = f.get("followers_count", 0)
+    out["bot"] = False
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Free bot / junk pre-filter (no LLM, no web research)
+# --------------------------------------------------------------------------- #
+def is_junk(f: dict) -> bool:
+    """Deterministically flag an obvious bot / empty / spam account.
+
+    Deliberately conservative: verified accounts are never flagged, and a real
+    account is only flagged when it has no bio AND almost no activity, or shows an
+    explicit spam signature. This is bot *detection*, not influence scoring — it
+    is the one place follower-adjacent activity signals are used.
+    """
+    if f.get("verified"):
+        return False
+    bio = (f.get("description") or "").strip()
+    name = f.get("name") or ""
+    tweet = (f.get("status") or {}).get("full_text") or ""
+    text = f"{bio} {name} {tweet}".lower()
+    if any(p in text for p in config.BOT_SPAM_PHRASES):
+        return True
+    statuses = f.get("statuses_count", 0) or 0
+    has_tweet = bool((f.get("status") or {}).get("full_text"))
+    # Empty bio and essentially no activity -> treat as bot / dormant.
+    return not bio and statuses < config.BOT_MIN_STATUSES and not has_tweet
+
+
+def junk_score(f: dict) -> dict:
+    """A free 'fake' score for a flagged account — tier D, no spend."""
+    out = _coerce_and_validate(dict.fromkeys(_CRITERIA_KEYS, 0), f)
+    out["confidence"] = 0.9
+    out["reasoning"] = "Flagged by the pre-filter as a bot / inactive / spam account (no LLM call)."
+    out["bot"] = True
     return out
 
 
@@ -200,11 +235,12 @@ class Scorer:
         )
 
     async def web_context(self, f: dict) -> str | None:
-        """Best-effort external context via Anthropic's web_search tool.
+        """Best-effort web research on who a follower actually is.
 
-        Used to inform the authority score for high-influence accounts whose
-        credentials are thin in-profile. Skips gracefully if the tool isn't
-        available (e.g. not enabled on the account).
+        Drives the real-world influence and authority scores — the whole point of
+        the rubric is to value people by their real stature, not follower count.
+        Skips gracefully (returns None) if the web_search tool isn't available on
+        the account.
         """
         if self.client is None:
             return None
@@ -212,14 +248,21 @@ class Scorer:
         try:
             msg = await self.client.messages.create(
                 model=config.HAIKU_MODEL,
-                max_tokens=400,
-                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
+                max_tokens=300,
+                tools=[{"type": "web_search_20250305", "name": "web_search",
+                        "max_uses": config.WEB_SEARCH_MAX_USES}],
                 messages=[{
                     "role": "user",
                     "content": (
-                        f"Who is {name} (X handle @{f.get('screen_name')}, bio: "
-                        f"\"{f.get('description','')}\")? In 1-2 sentences, summarize their "
-                        "professional authority/credentials relevant to their field."
+                        f"Research who this X (Twitter) user is and what they post about. "
+                        f"Name: {name}. Handle: @{f.get('screen_name')}. "
+                        f"Bio: \"{f.get('description','')}\". Search the web (including "
+                        "their recent tweets/posts if findable). In 2-4 sentences summarize: "
+                        "(1) their real-world influence and authority — founder/executive "
+                        "roles and company size, investments, wealth/billionaire status, "
+                        "public prominence, recognized expertise; and (2) the main themes "
+                        "of their recent posts. If you cannot confidently identify them, "
+                        "say so plainly."
                     ),
                 }],
             )
@@ -233,21 +276,24 @@ class Scorer:
 
     async def write_summary(self, handle: str, agg: dict) -> str:
         """Final Haiku call: a 3-4 sentence plain-English audience summary."""
+        bot_rate = agg.get("bot_rate", 0)
         if self.client is None:
             return (
-                f"[Mock summary] @{handle}'s sampled audience scored "
-                f"{agg['audience_score']}/100 for the \"{self.niche}\" niche. "
-                f"Tier mix: {agg['tiers']}. Add ANTHROPIC_API_KEY for a real "
-                "Claude-written summary."
+                f"[Mock summary] @{handle}'s real audience scored "
+                f"{agg['audience_score']}/100 for the \"{self.niche}\" niche, with "
+                f"~{bot_rate}% of the pool flagged as bots/inactive. Tier mix: "
+                f"{agg['tiers']}. Add ANTHROPIC_API_KEY for a real Claude-written summary."
             )
         top = ", ".join(f"@{t['screen_name']}" for t in agg["top_followers"][:8])
         prompt = (
-            f"You analyzed a sample of @{handle}'s followers for fit with the "
-            f"\"{self.niche}\" niche. The audience scored {agg['audience_score']}/100 "
-            f"(influence-weighted {agg['weighted_score']}/100). Tier distribution: "
-            f"{agg['tiers']} out of {agg['scored']} scored. Notable high-value "
-            f"followers: {top}. Write a 3-4 sentence plain-English summary of this "
-            "audience and how good a fit it is for the niche. Be specific and candid."
+            f"You estimated @{handle}'s audience fit for the \"{self.niche}\" niche "
+            f"from a random sample of {agg.get('analyzed', agg['scored'])} real "
+            f"followers (out of a pool of {agg.get('pool_size', '?')}). About "
+            f"{bot_rate}% of the pool were flagged as bots/inactive. The real "
+            f"followers scored {agg['audience_score']}/100 with tier distribution "
+            f"{agg['tiers']}. Notable high-value followers: {top}. Write a 3-4 "
+            "sentence plain-English summary of this audience, its fit for the niche, "
+            "and what the bot rate implies. Be specific and candid."
         )
         try:
             msg = await self.client.messages.create(

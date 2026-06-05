@@ -1,5 +1,9 @@
 # Architecture
 
+> 🧪 **Demo / proof-of-concept.** The design below works end-to-end but is meant
+> to show what's possible; the scoring and sampling would need fine-tuning before
+> production use.
+
 NicheFit is a single FastAPI process that serves both the JSON API and the
 single-page UI. There is no separate frontend server and no build step.
 
@@ -41,24 +45,32 @@ single-page UI. There is no separate frontend server and no build step.
 2. **`POST /api/analyze`** — create a job, kick off `run_analysis` as an
    `asyncio` background task, return a `job_id` immediately.
 3. **`run_analysis`** (in `engine.py`):
-   - **Scrape** followers (cache first; otherwise Apify), trim to `sample_size`.
-   - **Score** each uncached follower concurrently via `Scorer.score_one`,
-     bounded by an `asyncio.Semaphore`. Cached scores are reused.
-   - **Aggregate** into the audience score, influence-weighted score, criterion
-     averages, tier distribution, and top-25 list.
-   - **Summarize** with a final Haiku call.
-   - Persist the result as a saved analysis.
+   - **Scrape a pool** of followers (`pool_size`, cache first; otherwise Apify) —
+     cheap, and decoupled from how many we deeply analyze.
+   - **Bot-filter the whole pool for free** (`is_junk`): obvious bots/empty/spam
+     accounts get a free tier-D "fake" score, no LLM or research.
+   - **Deeply analyze a random sample of the real accounts** (capped at
+     `sample_size`): per-follower web research → `Scorer.score_one`, bounded by an
+     `asyncio.Semaphore`. Cached scores are reused first.
+   - **Aggregate** the real sample into the audience score, criterion averages,
+     tier distribution, and top-25 — plus the **bot rate** over the pool.
+   - **Summarize** with a final Haiku call, and persist the saved analysis.
 4. **`GET /api/progress/{job_id}`** — the UI polls this (~1 s) for live phase,
    counts, spend, logs, and the final result.
+
+This keeps cost flat by account size: a 100k-follower account scrapes the same
+pool and analyzes the same capped sample as a small one. The trade-off is that
+the result is a **sample-based estimate** (and the Apify actor returns
+followers newest-first, so the pool is the most recent slice, not a uniform draw).
 
 ## Caching
 
 Every paid call is cache-checked first:
 
 - **Followers** are cached per `handle`; a run reuses them if the cache already
-  holds at least `sample_size` rows (no Apify spend).
-- **Scores** are cached per `(handle, niche, screen_name)`; only uncached
-  followers are sent to Haiku.
+  holds at least `pool_size` rows (no Apify spend).
+- **Scores** are cached per `(handle, niche, screen_name)` — including free bot
+  scores; only uncached real accounts in the sample are sent to research + Haiku.
 - **Force refresh** clears both caches for that handle/niche before the run.
 
 The result: re-running the same handle/niche is instant and free.

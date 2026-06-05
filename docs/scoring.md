@@ -1,5 +1,9 @@
 # Scoring
 
+> 🧪 **Demo.** The rubric and prompt below are illustrative starting points, not a
+> calibrated, validated scoring system. Weights, bands, and tier cutoffs should be
+> fine-tuned against your own judgment before the scores are trusted.
+
 Each follower is rated 0–100 by its own Claude Haiku call ("sub-agent") against
 a five-criterion rubric. The per-follower totals are averaged into the audience
 score.
@@ -12,11 +16,15 @@ so **editing the bands here changes how the model scores**.
 
 | # | Criterion | Max | What it measures |
 |---|-----------|-----|------------------|
-| 1 | Niche Relevance | 35 | How clearly the follower belongs to / creates about / engages with the niche (bio, latest tweet, links). |
-| 2 | Influence & Reach | 25 | `followers_count` (log-scaled), `listed_count`, `verified`. |
-| 3 | Authority / Expertise | 20 | Credentials, affiliations, named recognition. Informed by the optional web lookup. |
-| 4 | Engagement Quality | 10 | Latest-tweet resonance **relative to** follower count (likes/RTs per follower). |
-| 5 | Account Authenticity / Activity | 10 | Account age, follower/following ratio, activity; bot/spam/dormant signals score low. |
+| 1 | Niche Relevance | 30 | How clearly the follower belongs to / creates about / engages with the niche. |
+| 2 | Real-World Influence | 35 | Who the person actually is — founder/exec, investor, billionaire, public figure, recognized authority — from **web research, not follower count**. |
+| 3 | Authority / Expertise | 20 | Credentials, affiliations, recognized track record (researched). |
+| 4 | Content Quality | 8 | Substance of what they post, judged on the content itself (not normalized by audience size). |
+| 5 | Authenticity / Activity | 7 | Account age and activity; bot/spam/dormant signals score low. |
+
+**Key principle:** a major real-world figure scores high on influence even when
+they're off-topic for the niche — their attention is valuable regardless. Follower
+count is deliberately excluded from grading (it's not even shown to the model).
 
 **Total** = sum of the five (0–100). **Tiers:** A = 80–100, B = 60–79,
 C = 40–59, D = 0–39.
@@ -28,8 +36,11 @@ are reproduced verbatim in the prompt so scoring is consistent across followers.
 ## Two scores
 
 - **Audience score** — the plain mean of per-follower totals.
-- **Influence-weighted score** — a secondary number weighting each follower by
-  `log10(followers_count + 1)`, so high-reach followers count for more.
+- **Influence-weighted score** — a secondary display number that weights each
+  follower by `log10(followers_count + 1)`. ⚠️ This is the one remaining place
+  that touches follower count; since grading itself no longer uses it, this
+  secondary metric is a candidate to drop or replace (e.g. with high-value
+  density, the % of the audience in tiers A+B).
 
 ## Prompt design
 
@@ -69,14 +80,19 @@ After aggregation, a final Haiku call writes a 3–4 sentence plain-English summ
 of the audience and its fit for the niche, given the score, tier mix, and the
 notable high-value followers.
 
-## Optional external web lookup (cost-gated, default OFF)
+## Web research (default ON)
 
-For followers who are high-influence but thin on in-profile authority signals,
-the engine can call Anthropic's `web_search` tool to fetch external context and
-feed a short snippet into that follower's scoring prompt (used for the Authority
-criterion). It is gated to the **top 5% by follower count**, **max 20
-lookups/run**, and **≥ 25,000 followers** (all in `config.py`). Its added cost is
-shown in the estimate, and it **skips gracefully** if the tool isn't available.
+The Real-World Influence and Authority criteria depend on knowing who a follower
+actually is, so when research is enabled (the default) the engine calls
+Anthropic's `web_search` tool **once per follower being scored** and feeds the
+result into that follower's scoring prompt. Unlike before, it is **not gated by
+follower count** — every follower is researched, so a low-follower billionaire
+isn't skipped.
+
+Each research call adds a web search + tokens; the cost is shown in the estimate,
+and it **skips gracefully** (scores from the profile alone) if the `web_search`
+tool isn't enabled on the account. Turn it off per-run with the "Research each
+follower" checkbox to save cost.
 
 ## Tuning
 

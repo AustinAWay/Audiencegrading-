@@ -1,5 +1,12 @@
 # NicheFit
 
+> 🧪 **Demo / proof-of-concept.** This project demonstrates *what's possible*, not
+> a finished product. The scoring rubric, prompts, bot filter, and especially the
+> follower sampling (constrained by the data source, which returns followers
+> newest-first) are reasonable starting points that would **need real fine-tuning
+> and validation** before the scores could be trusted. Treat all output as
+> directional, not authoritative.
+
 **Score how good an X (Twitter) account's audience is for a chosen niche** — by
 analyzing and rating *each follower individually* with Claude Haiku, then
 averaging into a single **0–100 audience score**.
@@ -45,15 +52,31 @@ port.
 ## How a run works
 
 1. Paste an X link or `@handle`, pick a niche (or type a custom one).
-2. The app shows an **estimated cost + follower/score counts + a confirm step**.
-3. On confirm it scrapes followers, scores each concurrently, and shows:
-   a **0–100 gauge** (plus an influence-weighted score), a **criterion
-   breakdown**, a **tier donut**, the **top-25 followers** with per-criterion
-   scores + reasoning, and a **summary**.
+2. The app shows an **estimated cost + a confirm step**.
+3. On confirm it:
+   - **scrapes a cheap pool** of followers (default ~1,000),
+   - **bot-filters the whole pool for free** (no LLM) and counts bots as fake,
+   - **deeply analyzes a random sample of the real accounts** (default 150) with
+     web research + Haiku,
+   - shows a **0–100 real-audience gauge**, the **bot rate**, a **criterion
+     breakdown**, a **tier donut**, the **top-25 followers** with reasoning, and a
+     **summary**.
 
-Results are cached in SQLite keyed by `handle` (followers) and `handle + niche`
-(scores), so re-runs are instant and free. A **Force refresh** toggle ignores the
-cache.
+Because only a capped sample is deeply analyzed, **cost stays flat regardless of
+account size** — analyzing a 100k-follower account costs about the same as a 5k
+one. Results are cached in SQLite (`handle` for followers, `handle + niche` for
+scores), so re-runs are instant and free; **Force refresh** ignores the cache.
+
+### Run modes (one-click)
+
+| Button | What it does | Cost |
+|--------|--------------|------|
+| **Estimate cost →** | Uses the form's own settings (full control). | depends |
+| **⚡ Full account (cheap estimate)** | Scrapes a big pool, bot-filters free, scores a random sample of real followers **without web research**, and **projects the bot rate + tier mix across the whole account**. | ~$0.50 |
+| **★ Top 100 by reach (deep)** | Deeply analyzes the 100 followers with the most followers of their own, **with web research** — your highest-reach audience. | ~$1.80 |
+
+The results dashboard shows the real-sample tier donut **and** a "projected
+across the full account" breakdown (bots + tiers as % of everyone).
 
 ---
 
@@ -63,13 +86,18 @@ Each follower is scored 0–100 across five weighted criteria:
 
 | # | Criterion | Max |
 |---|-----------|-----|
-| 1 | Niche Relevance | 35 |
-| 2 | Influence & Reach | 25 |
+| 1 | Niche Relevance | 30 |
+| 2 | Real-World Influence | 35 |
 | 3 | Authority / Expertise | 20 |
-| 4 | Engagement Quality | 10 |
-| 5 | Account Authenticity / Activity | 10 |
+| 4 | Content Quality | 8 |
+| 5 | Authenticity / Activity | 7 |
 
 Tiers: **A** 80–100 · **B** 60–79 · **C** 40–59 · **D** 0–39.
+
+Value is driven by **real-world influence — who the person actually is** (founder,
+executive, investor, billionaire, public figure), judged from **web research, not
+follower count**. A major real-world figure is a valuable audience member even
+when they're off-topic for the niche.
 
 **All weights, point bands, and tiers live in one place:**
 [`nichefit/config.py`](nichefit/config.py) (the `RUBRIC` object). The rubric text
@@ -81,16 +109,46 @@ and the strict-JSON output contract.
 
 ## Cost & safety
 
-- Pre-run **cost estimate** (Apify + Haiku + optional web lookups) with confirm.
+- **Flat cost by account size** — a cheap pool scrape + free bot filter + a
+  capped deep-analysis sample mean a 100k account costs about the same as a small
+  one.
+- **Free bot filter** — obvious bots/empty/spam accounts are flagged from raw
+  data (no LLM/research) and counted as fake.
+- Pre-run **cost estimate** (Apify pool + Haiku + web research) with confirm.
 - **Caching everywhere**; force refresh to override.
 - **Concurrency limit + backoff**; one bad follower never kills the run.
-- Live **"spent this run"** counter.
-- **Mock mode** so you can see everything before spending.
+- Live **"spent this run"** counter, and **mock mode** to preview free.
 - All keys are **server-side only** — never sent to the browser.
 
-> Real runs consume **Apify credits** (~$0.10–0.15 / 1,000 followers) and
-> **Anthropic tokens** (~$0.002–0.003 / follower). The estimate screen shows both
-> before you confirm. For a first run, keep the sample at ~200.
+> Real runs consume **Apify credits** (~$0.10–0.15 / 1,000 pooled followers) and
+> **Anthropic tokens + web searches** (~$0.02 / deeply-analyzed real follower).
+> The estimate screen shows the total before you confirm. Example: a huge,
+> bot-heavy account with a 200 pool + 8 real analyzed ≈ **$0.21**.
+
+> **Sampling caveat:** the Apify actor returns followers newest-first, so the
+> sample is drawn from the most recent slice of the audience, not uniformly
+> across all followers.
+
+---
+
+## Limitations (this is a demo)
+
+NicheFit is a working proof-of-concept, not a validated product. Known gaps that
+would need fine-tuning before relying on scores:
+
+- **Sampling is newest-first.** The data source returns recent followers first
+  (mostly bots), so reaching real/high-value followers requires scanning deep
+  enough to cover the whole account. There's no "by reach" ordering available.
+- **No tweet text.** This follower actor doesn't return tweets, so "Activity" is
+  inferred from post counts and Top-mode "looks at tweets" via web search rather
+  than a real timeline pull (a dedicated tweet-scraper actor would improve this).
+- **Scores are uncalibrated.** The rubric weights, point bands, and prompt are
+  reasonable defaults but haven't been validated against ground truth. A "B" vs
+  "A" boundary is a judgment call you'd tune to your own taste.
+- **Influence research depends on web search** being enabled on the Anthropic
+  account, and on the person being findable online.
+- **Cost estimates are approximate** (the real bot rate and per-call token usage
+  vary); the live spend counter and confirm step are the real safeguards.
 
 ---
 
