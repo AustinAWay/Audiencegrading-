@@ -99,7 +99,11 @@ APIFY_MIN_FOLLOWERS: int = 200
 # verified accounts are never flagged.
 # --------------------------------------------------------------------------- #
 BOT_FILTER_ENABLED_DEFAULT: bool = True
-BOT_MIN_STATUSES: int = 3              # empty bio + fewer tweets than this -> junk
+BOT_MIN_STATUSES: int = 3              # empty bio + fewer tweets than this -> inactive
+# Never flag an account as inactive/junk if it has at least this many followers —
+# a high-reach but silent/blank account is likely a real (often influential)
+# person worth researching, not noise. (Same spirit as the verified exemption.)
+BOT_REACH_EXEMPTION: int = 1000
 BOT_SPAM_PHRASES: list[str] = [
     "follow back", "followback", "f4f", "follow 4 follow", "follow for follow",
     "dm for promo", "dm for promotion", "promo code", "100% accurate",
@@ -133,7 +137,7 @@ MODE_PRESETS: dict = {
 # live "spent this run" counter approximation.
 # --------------------------------------------------------------------------- #
 APIFY_COST_PER_1000_FOLLOWERS: float = float(
-    os.getenv("APIFY_COST_PER_1000_FOLLOWERS", "0.13")
+    os.getenv("APIFY_COST_PER_1000_FOLLOWERS", "0.10")  # matches the actor's "$0.1 / 1K"
 )
 # Haiku 4.5 list price (USD per million tokens). Adjust if pricing changes.
 HAIKU_INPUT_PRICE_PER_MTOK: float = float(os.getenv("HAIKU_INPUT_PRICE_PER_MTOK", "1.0"))
@@ -141,6 +145,34 @@ HAIKU_OUTPUT_PRICE_PER_MTOK: float = float(os.getenv("HAIKU_OUTPUT_PRICE_PER_MTO
 # Rough token footprint of one scoring call (big rubric + few-shot in, JSON out).
 EST_INPUT_TOKENS_PER_FOLLOWER: int = 1800
 EST_OUTPUT_TOKENS_PER_FOLLOWER: int = 130
+
+# Batched grading (used by "Full account" to grade EVERY real follower cheaply):
+# many followers per Haiku call, no per-follower web research.
+GRADE_BATCH_SIZE: int = int(os.getenv("GRADE_BATCH_SIZE", "15"))
+# Per-follower token footprint inside a batch (shared rubric, so much cheaper).
+EST_BATCH_INPUT_TOKENS_PER_FOLLOWER: int = 130
+EST_BATCH_OUTPUT_TOKENS_PER_FOLLOWER: int = 60
+
+# --------------------------------------------------------------------------- #
+# Account score weighting — high-value followers should lift the score far more
+# than mediocre ones (not a flat average). Each graded follower contributes
+# points by tier; bots contribute 0. account_score = mean points x 10 (0-100),
+# so an audience full of A-tier followers approaches 100 and a botty/low one
+# stays near 0. Tune these to taste.
+# --------------------------------------------------------------------------- #
+TIER_POINTS: dict = {"A": 10, "B": 5, "C": 2, "D": 0}
+
+# --------------------------------------------------------------------------- #
+# Bell-curve percentile — "an absolute 100/100 is nearly impossible, so show where
+# this account falls vs the distribution of all accounts." We start from an assumed
+# normal distribution (most accounts are mediocre/botty, so the mean is low) and
+# let it shift SMOOTHLY toward the empirical mean/std as real accounts accumulate:
+# the assumption acts as a prior worth BELL_PRIOR_STRENGTH accounts. With 0 runs it
+# is all assumption; with many runs it is mostly real data.
+# --------------------------------------------------------------------------- #
+ACCOUNT_SCORE_MEAN: float = float(os.getenv("ACCOUNT_SCORE_MEAN", "25"))
+ACCOUNT_SCORE_STD: float = float(os.getenv("ACCOUNT_SCORE_STD", "15"))
+BELL_PRIOR_STRENGTH: float = float(os.getenv("BELL_PRIOR_STRENGTH", "8"))
 
 # --------------------------------------------------------------------------- #
 # Optional external web lookup (cost-gated). Default OFF for safety.
@@ -150,7 +182,8 @@ EST_OUTPUT_TOKENS_PER_FOLLOWER: int = 130
 # follower count) so the model can judge real-world influence from who the
 # person actually is. This costs an extra search + tokens per follower.
 WEB_LOOKUP_ENABLED_DEFAULT: bool = True
-WEB_SEARCH_MAX_USES: int = 1                 # searches per follower (cost control)
+WEB_SEARCH_MAX_USES: int = 4                 # searches per follower in top mode (cost control)
+PERSON_SEARCH_MAX_USES: int = 10             # single-person: search hard to actually find them
 # Realistic token footprint of a research call: the web_search results are fed
 # back as input tokens, so this is much larger than a plain scoring call.
 WEB_LOOKUP_EST_TOKENS: int = 4000            # extra tokens per researched follower

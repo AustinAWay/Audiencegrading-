@@ -7,6 +7,9 @@
 *.db
 *.sqlite
 *.sqlite3
+# ...but DO commit the app's database so runs / the leaderboard persist across
+# instances (see "Data persistence" in the README). The test DB stays ignored.
+!nichefit.db
 
 # Python
 __pycache__/

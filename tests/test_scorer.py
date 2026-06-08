@@ -56,6 +56,9 @@ def test_is_junk_flags_spam_and_empty_but_not_real():
     assert scorer.is_junk(empty) is True
     assert scorer.is_junk(real) is False
     assert scorer.is_junk(verified_sparse) is False  # verified is never junk
+    # a blank/silent but HIGH-REACH account is kept (likely a real, influential lurker)
+    high_reach_blank = {"description": "", "statuses_count": 0, "status": None, "followers_count": 5000}
+    assert scorer.is_junk(high_reach_blank) is False
 
 
 def test_junk_score_is_free_tier_d():

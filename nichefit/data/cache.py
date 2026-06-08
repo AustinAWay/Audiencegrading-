@@ -143,3 +143,37 @@ def get_analysis(analysis_id: str) -> dict | None:
             "SELECT result FROM analyses WHERE id = ?", (analysis_id,)
         ).fetchone()
     return json.loads(row["result"]) if row else None
+
+
+def clear_all() -> None:
+    """Wipe every cached follower, score, and saved analysis."""
+    with _conn() as conn:
+        conn.executescript("DELETE FROM followers; DELETE FROM scores; DELETE FROM analyses;")
+
+
+def leaderboard() -> list[dict]:
+    """All analyzed accounts stack-ranked by account score (latest run per handle)."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT handle, niche, result, created_at FROM analyses ORDER BY created_at DESC"
+        ).fetchall()
+    seen: set = set()
+    out: list[dict] = []
+    for r in rows:
+        h = r["handle"]
+        if h in seen:
+            continue  # keep only the latest run per handle
+        seen.add(h)
+        try:
+            res = json.loads(r["result"])
+        except (ValueError, TypeError):
+            continue
+        score = res.get("account_score", res.get("audience_score"))
+        if score is None:
+            continue
+        out.append({
+            "handle": h, "niche": r["niche"],
+            "account_score": round(float(score), 1), "created_at": r["created_at"],
+        })
+    out.sort(key=lambda x: x["account_score"], reverse=True)
+    return out

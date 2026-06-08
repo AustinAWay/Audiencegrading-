@@ -120,6 +120,27 @@ def follower_to_xml(f: dict) -> str:
     )
 
 
+def batch_prompt(followers: list) -> str:
+    """Prompt to grade MANY followers in one call (cheap, no web research).
+
+    Returns instructions for a JSON array, one object per follower, each echoing
+    its screen_name so results can be matched back.
+    """
+    blocks = "\n".join(follower_to_xml(f) for f in followers)
+    return (
+        f"Grade EACH of the following {len(followers)} X followers against the rubric. "
+        "No web research is available — judge from the bio and activity counts; when "
+        "real-world influence/authority can't be established from the profile, score "
+        "those low and lower confidence (don't invent).\n\n"
+        f"<followers>\n{blocks}\n</followers>\n\n"
+        "Return ONLY a JSON array with one object per follower, in the same order, and "
+        "include each follower's exact screen_name. Each object uses the schema:\n"
+        '{"screen_name": str, "niche_relevance": int, "influence_reach": int, '
+        '"authority": int, "engagement_quality": int, "authenticity": int, '
+        '"total": int, "tier": "A|B|C|D", "confidence": 0.0-1.0, "reasoning": "short"}'
+    )
+
+
 def _tweets_block(tweets) -> str:
     if not tweets:
         return ""

@@ -121,9 +121,9 @@ async def post_estimate(req: EstimateReq):
     cached_followers = 0 if req.force_refresh else len(db.get_cached_followers(handle))
     cached_scores = 0 if req.force_refresh else len(db.get_cached_scores(handle, req.niche))
     est = cost_mod.estimate(
-        sample, pool, r["web_lookup"], skip_bots=r["skip_bots"],
+        sample, pool, r["web_lookup"], selection=r["selection"], skip_bots=r["skip_bots"],
         cached_followers=min(cached_followers, pool),
-        cached_scores=min(cached_scores, sample),
+        cached_scores=min(cached_scores, pool),
     )
     est["handle"] = handle
     est["niche"] = req.niche
@@ -192,6 +192,22 @@ async def get_progress(job_id: str):
 @app.get("/api/analyses")
 async def get_analyses():
     return {"analyses": db.list_analyses()}
+
+
+@app.get("/api/leaderboard")
+async def get_leaderboard():
+    board = db.leaderboard()
+    pop = [r["account_score"] for r in board]
+    for i, row in enumerate(board, 1):
+        row["rank"] = i
+        row["percentile"] = engine.bell_percentile(row["account_score"], pop)  # current curve
+    return {"accounts": board, "total": len(board)}
+
+
+@app.post("/api/clear")
+async def post_clear():
+    db.clear_all()
+    return {"ok": True}
 
 
 @app.get("/api/analyses/{analysis_id}")

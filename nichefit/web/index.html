@@ -54,6 +54,7 @@ const INK = "#15140F", MUTED = "#6f6b62", PURPLE = "#6A4CF0", LIME = "#C2F23D", 
 const TIER_COLORS = { A:"#0E7A62", B:"#9BCC00", C:"#E8A317", D:"#E5484D" };
 const fmt = (n) => (n||0).toLocaleString();
 const usd = (n) => "$" + (n||0).toFixed(n < 1 ? 4 : 2);
+const fmtDate = (ts) => { try { return new Date(ts*1000).toLocaleString(); } catch(e){ return ""; } };
 const scoreColor = (v) => v >= 80 ? "#0E7A62" : v >= 60 ? "#9BCC00" : v >= 40 ? "#E8A317" : "#E5484D";
 
 // ----- widgets ------------------------------------------------------------
@@ -124,12 +125,22 @@ function Stat({ label, value, sub }) {
   );
 }
 
+function Metric({ value, label, sub, accent }) {
+  return (
+    <div className={(accent ? "card-teal" : "card") + " p-6 text-center flex flex-col justify-center"}>
+      <div style={{fontSize:"3.75rem", lineHeight:1, fontWeight:900, color: accent ? LIME : PURPLE}}>{value}</div>
+      <div className="mt-2 font-extrabold" style={{color: accent ? "#fff" : INK}}>{label}</div>
+      {sub && <div className="text-xs mt-1" style={{color: accent ? "rgba(255,255,255,.7)" : MUTED}}>{sub}</div>}
+    </div>
+  );
+}
+
 const PHASE_ORDER = ["Queued","Scraping followers","Filtering bots","Scoring followers","Writing summary","Done"];
 function phaseHint(phase) {
   switch (phase) {
     case "Scraping followers": return "Pulling the account's followers from X (the API returns them newest-first).";
-    case "Filtering bots": return "Dropping obvious fake / empty / inactive accounts for free — no AI calls.";
-    case "Scoring followers": return "Researching each real follower on the web, then grading them 0–100 on the rubric.";
+    case "Filtering bots": return "Setting aside empty / inactive accounts (no bio, no posts) for free — high-reach ones are kept. No AI calls.";
+    case "Scoring followers": return "Grading each real follower 0–100 on the rubric (researching the top ones externally).";
     case "Writing summary": return "Averaging the grades into the audience score and writing the summary.";
     case "Done": return "Finished.";
     default: return "Getting started…";
@@ -139,7 +150,7 @@ function phaseHint(phase) {
 function Steps({ phase }) {
   const steps = [
     { label:"Scrape followers", ends:"Scraping followers" },
-    { label:"Filter bots", ends:"Filtering bots" },
+    { label:"Filter inactive", ends:"Filtering bots" },
     { label:"Research & grade", ends:"Scoring followers" },
     { label:"Summarize", ends:"Writing summary" },
   ];
@@ -260,6 +271,10 @@ function App() {
   const [query, setQuery] = useState("");
   const [personResult, setPersonResult] = useState(null);
   const [personBusy, setPersonBusy] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [histBusy, setHistBusy] = useState(false);
+  const [board, setBoard] = useState([]);
+  const [rank, setRank] = useState(null);
 
   const [loadError, setLoadError] = useState(false);
   useEffect(() => {
@@ -339,7 +354,7 @@ function App() {
         const p = await resp.json();
         fails = 0;
         setProgress(p);
-        if (p.status === "done") { clearInterval(pollRef.current); setResult(p.result); setStage("done"); }
+        if (p.status === "done") { clearInterval(pollRef.current); setResult(p.result); setStage("done"); showRank(p.result.handle); }
         if (p.status === "error") { clearInterval(pollRef.current); setError(p.error || "The run failed. Please try again."); setStage("error"); }
       } catch (e) {
         if (++fails >= 4) { clearInterval(pollRef.current); setError("Lost connection to the run. Please try again."); setStage("error"); }
@@ -359,6 +374,40 @@ function App() {
       setPersonResult(await r.json());
     } catch (e) { setError("Analysis failed: " + e.message); }
     finally { setPersonBusy(false); }
+  }
+
+  async function loadHistory() {
+    setHistBusy(true);
+    try { const d = await (await fetch("/api/analyses")).json(); setHistory(d.analyses || []); }
+    catch (e) { setHistory([]); }
+    finally { setHistBusy(false); }
+  }
+
+  async function loadBoard() {
+    try { const d = await (await fetch("/api/leaderboard")).json(); setBoard(d.accounts || []); return d.accounts || []; }
+    catch (e) { return []; }
+  }
+  function rankFor(accounts, handle) {
+    const h = (handle || "").toLowerCase();
+    const row = accounts.find(a => (a.handle || "").toLowerCase() === h);
+    return row ? { rank: row.rank, total: accounts.length, percentile: row.percentile } : null;
+  }
+  async function showRank(handle) { setRank(rankFor(await loadBoard(), handle)); }
+
+  async function clearAll() {
+    if (!window.confirm("Clear ALL saved data — cached followers, scores, past runs, and the leaderboard? This can't be undone.")) return;
+    try { await fetch("/api/clear", { method:"POST" }); setHistory([]); setBoard([]); setRank(null); }
+    catch (e) { setError("Couldn't clear data."); }
+  }
+
+  async function openPast(id) {
+    setError(null);
+    try {
+      const r = await fetch("/api/analyses/" + id);
+      if (!r.ok) { setError("Couldn't load that run."); return; }
+      const res = await r.json();
+      setResult(res); setStage("done"); showRank(res.handle);
+    } catch (e) { setError("Couldn't load that run."); }
   }
 
   function reset() { setStage("form"); setResult(null); setProgress(null); setEst(null); setError(null); }
@@ -410,6 +459,8 @@ function App() {
           <div className="flex gap-2">
             <button onClick={()=>{setTab("audience");setError(null);}} className={"pill " + (tab==="audience"?"pill-active":"")}>Audience analysis</button>
             <button onClick={()=>{setTab("person");setError(null);}} className={"pill " + (tab==="person"?"pill-active":"")}>Single person</button>
+            <button onClick={()=>{setTab("history");setError(null);loadHistory();}} className={"pill " + (tab==="history"?"pill-active":"")}>History</button>
+            <button onClick={()=>{setTab("leaderboard");setError(null);loadBoard();}} className={"pill " + (tab==="leaderboard"?"pill-active":"")}>Leaderboard</button>
           </div>
 
           {tab === "audience" && (
@@ -427,11 +478,11 @@ function App() {
                 <div className="grid md:grid-cols-2 gap-3">
                   <button onClick={()=>getEstimate("full")} disabled={estimating} className="card-teal text-left p-5 transition hover:brightness-110 disabled:opacity-60">
                     <div className="text-lg font-extrabold">Full account</div>
-                    <div className="text-sm mt-1" style={{color:"rgba(255,255,255,.8)"}}>Random sample of all your followers. Measures the bot rate — which lowers the overall score. Cheap, no web research.</div>
+                    <div className="text-sm mt-1" style={{color:"rgba(255,255,255,.8)"}}>Grades <b>every</b> real follower (bot-filtered, batched, no research) into a tier-weighted account score — A-tier followers count far more.</div>
                   </button>
                   <button onClick={()=>getEstimate("top")} disabled={estimating} className="card-purple text-left p-5 transition hover:brightness-110 disabled:opacity-60">
                     <div className="text-lg font-extrabold">Top followers</div>
-                    <div className="text-sm mt-1" style={{color:"rgba(255,255,255,.8)"}}>Ranks all your followers by their own follower count, then researches &amp; grades the top 100.</div>
+                    <div className="text-sm mt-1" style={{color:"rgba(255,255,255,.8)"}}>Ranks all your followers by their own follower count, then deeply researches &amp; grades the top 100.</div>
                   </button>
                 </div>
                 {estimating && <div className="mt-2 text-sm" style={{color:MUTED}}>Checking account size &amp; estimating cost…</div>}
@@ -502,6 +553,53 @@ function App() {
                 : <PersonCard r={personResult} cfg={cfg}/>)}
             </div>
           )}
+
+          {tab === "history" && (
+            <div className="card p-7 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-extrabold">Past runs</h2>
+                <button onClick={loadHistory} className="text-sm font-semibold" style={{color:PURPLE}}>Refresh</button>
+              </div>
+              {histBusy && <p className="text-sm" style={{color:MUTED}}>Loading…</p>}
+              {!histBusy && history.length === 0 && (
+                <p className="text-sm" style={{color:MUTED}}>No saved runs yet — run an audience analysis and it'll appear here (saved locally).</p>
+              )}
+              <div className="space-y-2">
+                {history.map(h=>(
+                  <button key={h.id} onClick={()=>openPast(h.id)}
+                    className="soft w-full text-left p-3 transition hover:brightness-95 flex items-center justify-between gap-3">
+                    <span className="font-semibold">@{h.handle} <span style={{color:MUTED}} className="font-normal">· {h.niche}</span></span>
+                    <span className="text-xs whitespace-nowrap" style={{color:MUTED}}>{fmtDate(h.created_at)}</span>
+                  </button>
+                ))}
+              </div>
+              {history.length > 0 && (
+                <button onClick={clearAll} className="text-sm font-semibold mt-2" style={{color:"#E5484D"}}>Clear all data</button>
+              )}
+            </div>
+          )}
+
+          {tab === "leaderboard" && (
+            <div className="card p-7 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-extrabold">Leaderboard</h2>
+                <button onClick={loadBoard} className="text-sm font-semibold" style={{color:PURPLE}}>Refresh</button>
+              </div>
+              <p className="text-xs" style={{color:MUTED}}>Every account graded so far, stack-ranked by account score (best run per handle).</p>
+              {board.length === 0 && <p className="text-sm" style={{color:MUTED}}>No accounts graded yet.</p>}
+              <div className="space-y-2">
+                {board.map((a,i)=>(
+                  <div key={a.handle} className="soft p-3 flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-3">
+                      <span className="font-extrabold w-8 text-center" style={{color: i<3?PURPLE:MUTED}}>#{a.rank}</span>
+                      <span className="font-semibold">@{a.handle} <span style={{color:MUTED}} className="font-normal">· {a.niche}</span></span>
+                    </span>
+                    <span className="text-xl font-extrabold" style={{color:scoreColor(a.account_score)}}>{Math.round(a.account_score)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -513,14 +611,14 @@ function App() {
             <span className="font-bold" style={{color:PURPLE}}> "{activeNiche()}"</span> niche.</p>
           {est.mode && est.mode !== "custom" && (
             <div className="text-sm font-medium soft p-3" style={{display:"inline-block"}}>
-              {est.mode === "full" ? "Full account (cheap estimate)" : "Top followers (deep)"}
-              {" · "}{est.selection === "top" ? "highest-reach followers" : "random sample"}
-              {" · "}{est.web_lookup ? "with web research" : "no web research"}
+              {est.selection === "top"
+                ? "Top followers — deep research on the top 100 by reach"
+                : "Full account — grades every real follower (tier-weighted score)"}
             </div>
           )}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label={est.scan_all ? "Followers (all)" : "Pool scraped"} value={fmt(est.to_scrape)} sub={est.cached_followers?`${fmt(est.cached_followers)} cached`:"bot-filtered free"}/>
-            <Stat label="Real analyzed (est.)" value={`~${fmt(est.to_score)}`} sub={est.skip_bots?"after bot filter":""}/>
+            <Stat label={est.scan_all ? "Followers (all)" : "Pool scraped"} value={fmt(est.to_scrape)} sub={est.cached_followers?`${fmt(est.cached_followers)} cached`:"inactive filtered free"}/>
+            <Stat label={est.selection==="top" ? "Top researched" : "Real followers graded"} value={`~${fmt(est.to_score)}`} sub={est.skip_bots?"after bot filter":""}/>
             <Stat label="Apify cost" value={usd(est.apify_cost)} sub={est.apify_mock?"mock — free":""}/>
             <Stat label="Haiku cost" value={usd(est.haiku_cost)} sub={est.anthropic_mock?"mock — free":""}/>
           </div>
@@ -587,18 +685,32 @@ function App() {
       {/* DONE */}
       {stage === "done" && result && (
         <div className="space-y-5">
+          <div className="mb-1">
+            <span className="font-extrabold text-lg">@{result.handle}</span>
+            <span style={{color:MUTED}}> · {result.niche} · {result.score_basis}</span>
+          </div>
+          {/* the three headline metrics */}
           <div className="grid md:grid-cols-3 gap-5">
-            <div className="card-teal p-6 flex flex-col items-center justify-center">
-              <BigScore value={result.audience_score} label={result.selection==="top" ? "top cohort" : "audience"}/>
-              {result.selection !== "top" && (
-                <div className="mt-3 text-center text-sm" style={{color:"rgba(255,255,255,.75)"}}>
-                  real followers avg: <span className="font-bold" style={{color:LIME}}>{result.real_audience_score}</span>
-                </div>
-              )}
-              <div className="mt-4 text-center">
-                <div className="text-3xl font-extrabold" style={{color:LIME}}>{result.bot_rate}%</div>
-                <div className="text-xs" style={{color:"rgba(255,255,255,.7)"}}>bots / inactive of {fmt(result.pool_size)} scanned</div>
+            <Metric accent value={Math.round(result.account_score ?? result.audience_score)}
+              label="Account score" sub="raw score · / 100"/>
+            <Metric value={(rank && rank.percentile != null ? rank.percentile : result.bell_percentile) ?? "–"}
+              label="Bell-curve percentile"
+              sub={(() => { const p = rank && rank.percentile != null ? rank.percentile : result.bell_percentile; return p != null ? `better than ${p}% of accounts (${rank ? rank.total : 1} graded)` : "—"; })()}/>
+            <Metric value={rank ? "#" + rank.rank : "–"}
+              label="Leaderboard rank" sub={rank ? `of ${rank.total} graded accounts` : "first one in!"}/>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-5">
+            <div className="card p-6 flex flex-col justify-center gap-4 text-center">
+              <div>
+                <div className="text-3xl font-extrabold" style={{color:TEAL}}>{result.high_value_pct ?? 0}%</div>
+                <div className="text-xs" style={{color:MUTED}}>A/B-tier ({result.star_a ?? 0}A · {result.star_b ?? 0}B)</div>
               </div>
+              <div>
+                <div className="text-3xl font-extrabold" style={{color:"#E5484D"}}>{result.bot_rate ?? 0}%</div>
+                <div className="text-xs" style={{color:MUTED}}>inactive / no profile</div>
+              </div>
+              <div className="text-xs" style={{color:"#9a9588"}}>avg grade {result.real_audience_score ?? "–"} · {fmt(result.analyzed)} graded</div>
             </div>
             <div className="card p-6 md:col-span-2">
               <h3 className="font-extrabold mb-4">Criterion breakdown (avg)</h3>
@@ -616,7 +728,7 @@ function App() {
                 <div className="mt-4 pt-3 border-t" style={{borderColor:"#E7E2D5"}}>
                   <div className="text-xs mb-2" style={{color:MUTED}}>Projected across the full account:</div>
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-                    <span><span className="font-extrabold" style={{color:"#E5484D"}}>{result.projected.Bots}%</span> bots</span>
+                    <span><span className="font-extrabold" style={{color:"#E5484D"}}>{result.projected.Bots}%</span> inactive</span>
                     {["A","B","C","D"].map(t=>(
                       <span key={t}><span className="font-extrabold" style={{color:TIER_COLORS[t]}}>{result.projected[t]}%</span> {t}</span>
                     ))}
@@ -629,7 +741,7 @@ function App() {
               <p className="leading-relaxed" style={{color:"#3f3c34"}}>{result.summary}</p>
               <div className="mt-4 flex flex-wrap gap-4 text-xs" style={{color:MUTED}}>
                 <span>analyzed: {fmt(result.analyzed)} real of {fmt(result.pool_size)} pool</span>
-                <span>bots flagged: {fmt(result.flagged_bots)} ({result.bot_rate}%)</span>
+                <span>inactive / no-profile: {fmt(result.flagged_bots)} ({result.bot_rate}%)</span>
                 <span>avg confidence: {result.avg_confidence}</span>
                 <span>spent: {usd(result.spend.total)} (apify {usd(result.spend.apify)} · haiku {usd(result.spend.anthropic)})</span>
               </div>
@@ -693,15 +805,16 @@ function App() {
           })()}
 
           <div className="flex flex-wrap gap-3">
-            <button onClick={continueNext} className="btn btn-purple">
-              {result.selection === "top" ? "Analyze the next 100 by reach" : "Analyze 100 more"}
-            </button>
+            {result.selection === "top" && (
+              <button onClick={continueNext} className="btn btn-purple">Analyze the next 100 by reach</button>
+            )}
             <button onClick={reset} className="btn btn-ghost">New analysis</button>
           </div>
-          <p className="text-xs" style={{color:MUTED}}>
-            “Analyze 100 more” keeps the {result.analyzed} you've already graded (free from cache) and adds the next batch —
-            you'll see the added cost before confirming.
-          </p>
+          {result.selection === "top" && (
+            <p className="text-xs" style={{color:MUTED}}>
+              Keeps the {result.analyzed} you've already graded (free from cache) and researches the next 100 by reach — you'll see the added cost first.
+            </p>
+          )}
         </div>
       )}
 

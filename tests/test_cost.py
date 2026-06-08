@@ -26,8 +26,18 @@ def test_bot_filter_reduces_analyzed_count():
 
 
 def test_web_research_adds_capped_cost():
-    est = estimate(200, pool_size=1000, web_lookup=True)
-    no_web = estimate(200, pool_size=1000, web_lookup=False)
+    # web research only applies to "top" mode
+    est = estimate(200, pool_size=1000, web_lookup=True, selection="top")
+    no_web = estimate(200, pool_size=1000, web_lookup=False, selection="top")
     assert est["web_lookups"] > 0
     assert est["web_cost"] > 0
     assert est["total_cost"] > no_web["total_cost"]
+
+
+def test_full_account_grades_all_and_is_cheap_per_follower():
+    # full (grade all real, batched) is much cheaper per follower than top (research)
+    full = estimate(100, pool_size=1000, web_lookup=False, selection="random")
+    top = estimate(100, pool_size=1000, web_lookup=True, selection="top")
+    # full grades far more followers (everyone real) yet costs less than researching 100
+    assert full["to_score"] > top["to_score"]
+    assert full["total_cost"] < top["total_cost"]

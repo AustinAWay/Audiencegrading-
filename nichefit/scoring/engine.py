@@ -9,7 +9,7 @@ crashes on a bad run.
 from __future__ import annotations
 
 import asyncio
-import random
+import math
 import time
 import uuid
 
@@ -17,6 +17,31 @@ from .. import config
 from ..data import apify
 from ..data import cache as db
 from .scorer import Scorer, is_junk, junk_score
+
+
+def bell_percentile(score: float, population: list[float] | None = None) -> float:
+    """Where `score` falls on the bell curve of all account scores (0-100).
+
+    Blends the assumed prior distribution with the empirical mean/std of the graded
+    accounts so far — the curve adapts continuously as more runs are added (the
+    prior is worth BELL_PRIOR_STRENGTH accounts). Returns the percentile
+    (e.g. 84 = better than 84% of accounts).
+    """
+    prior_mean, prior_std = config.ACCOUNT_SCORE_MEAN, config.ACCOUNT_SCORE_STD
+    w = config.BELL_PRIOR_STRENGTH
+    pop = population or []
+    n = len(pop)
+    if n == 0:
+        mu, sigma = prior_mean, prior_std
+    else:
+        emp_mean = sum(pop) / n
+        emp_var = sum((x - emp_mean) ** 2 for x in pop) / n
+        mu = (w * prior_mean + n * emp_mean) / (w + n)
+        var = (w * prior_std ** 2 + n * emp_var) / (w + n)
+        sigma = var ** 0.5
+    sigma = max(1e-6, sigma)
+    z = (score - mu) / sigma
+    return round(0.5 * (1 + math.erf(z / (2 ** 0.5))) * 100, 1)
 
 # job_id -> live job state (read by the /progress endpoint)
 JOBS: dict[str, dict] = {}
@@ -174,42 +199,63 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
         _log(jid, f"Pool of {len(followers)}: {len(bots)} flagged as bots/inactive "
                   f"(free), {len(real_candidates)} look real.")
 
-        # ---- 3. choose which real followers to deeply analyze ------------- #
-        # "top" -> the highest-reach followers; "random" -> a representative sample.
-        # Bots are skipped for free, so the sample tops up past them to stay full.
-        if settings.selection == "top":
-            real_candidates.sort(key=lambda t: t[0], reverse=True)
-        else:
-            random.shuffle(real_candidates)
-        chosen = real_candidates[: settings.sample_size]
+        # ---- 3. grade the real followers --------------------------------- #
+        job["phase"] = "Grading followers"
+        real_results: list[dict] = [obj for _, kind, obj in real_candidates if kind == "cached"]
+        cached_count = len(real_results)
 
-        real_results: list[dict] = [obj for _, kind, obj in chosen if kind == "cached"]
-        to_analyze: list[dict] = [obj for _, kind, obj in chosen if kind == "new"]
-
-        job["total"] = len(bots) + len(chosen)
-        job["scored"] = len(bots) + len(real_results)
-
-        research = settings.web_lookup
-        job["phase"] = "Scoring followers"
-        if to_analyze:
-            extra = " with web research" if research else " (no research — cheap)"
-            pick = "top-reach" if settings.selection == "top" else "random"
-            _log(jid, f"Deeply analyzing {len(to_analyze)} {pick} real follower(s){extra} "
-                      f"(concurrency {settings.concurrency})…")
-
-        async def worker(f: dict) -> None:
-            web_ctx = await scorer.web_context(f) if research else None
-            s = await scorer.score_one(f, web_context=web_ctx)
-            if s is None:
-                job["skipped"] += 1
-                return
-            real_results.append(s)
-            db.save_score(handle, niche, f.get("screen_name", ""), s)
-            job["scored"] += 1
+        def _bump_spend() -> None:
             job["spend"]["anthropic"] = round(scorer.spend_usd, 4)
             job["spend"]["total"] = round(job["spend"]["apify"] + scorer.spend_usd, 4)
 
-        await asyncio.gather(*(worker(f) for f in to_analyze))
+        if settings.selection == "top":
+            # Deep-dive: rank everyone by reach, research + grade the top N.
+            research = settings.web_lookup
+            real_candidates.sort(key=lambda t: t[0], reverse=True)
+            chosen = real_candidates[: settings.sample_size]
+            real_results = [obj for _, kind, obj in chosen if kind == "cached"]
+            cached_count = len(real_results)
+            to_grade = [obj for _, kind, obj in chosen if kind == "new"]
+            job["total"] = len(bots) + len(chosen)
+            job["scored"] = len(bots) + len(real_results)
+            if to_grade:
+                _log(jid, f"Researching & grading the top {len(to_grade)} follower(s) by reach…")
+
+            async def worker(f: dict) -> None:
+                web_ctx = await scorer.web_context(f) if research else None
+                s = await scorer.score_one(f, web_context=web_ctx)
+                if s is None:
+                    job["skipped"] += 1
+                    return
+                real_results.append(s)
+                db.save_score(handle, niche, f.get("screen_name", ""), s)
+                job["scored"] += 1
+                _bump_spend()
+
+            await asyncio.gather(*(worker(f) for f in to_grade))
+        else:
+            # Full account: grade EVERY real follower, batched, no web research.
+            research = False
+            to_grade = [obj for _, kind, obj in real_candidates if kind == "new"]
+            job["total"] = len(bots) + len(real_candidates)
+            job["scored"] = len(bots) + len(real_results)
+            bs = config.GRADE_BATCH_SIZE
+            if to_grade:
+                _log(jid, f"Grading all {len(to_grade)} real follower(s) in batches of {bs}…")
+            batches = [to_grade[i:i + bs] for i in range(0, len(to_grade), bs)]
+
+            async def grade_batch(batch: list[dict]) -> None:
+                results = await scorer.score_batch(batch)
+                for f, s in zip(batch, results):
+                    if s is None:
+                        job["skipped"] += 1
+                        continue
+                    real_results.append(s)
+                    db.save_score(handle, niche, f.get("screen_name", ""), s)
+                    job["scored"] += 1
+                _bump_spend()
+
+            await asyncio.gather(*(grade_batch(b) for b in batches))
 
         if len(bots) + len(real_results) == 0:
             raise RuntimeError(
@@ -218,7 +264,7 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
             )
         # We tried to grade real followers but every call failed — almost always an
         # Anthropic key / credit / rate-limit issue. Don't report an empty "0" result.
-        if to_analyze and not real_results:
+        if to_grade and len(real_results) == cached_count:
             raise RuntimeError(
                 "Grading failed for every follower — this usually means an Anthropic "
                 "API problem (invalid key, no credits, or rate limits). Please retry."
@@ -239,18 +285,30 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
             real_results, key=lambda s: (s["total"], s.get("followers_count", 0)), reverse=True
         )
 
-        # The mean over the real (non-bot) accounts.
+        # The mean grade over the real (non-bot) accounts (a secondary reference).
         agg["real_audience_score"] = agg["audience_score"]
-        if settings.selection == "top":
-            # "Top followers": the headline is the quality of the elite cohort
-            # itself, so the bot rate does not drag it down.
-            agg["score_basis"] = "top followers by reach"
-        else:
-            # "Whole account": bots count against the audience — the bot rate
-            # pulls the headline score down (real_avg x non-bot share).
-            real_frac = 1 - agg["bot_rate"] / 100.0
-            agg["audience_score"] = round(agg["real_audience_score"] * real_frac, 1)
-            agg["score_basis"] = "whole account (bot-adjusted)"
+
+        # ---- Account Score (the headline) -------------------------------- #
+        # Tier-weighted so high-value followers lift it far more than mediocre
+        # ones. Full account: bots are in the denominator (they drag it down, and
+        # the score reflects the WHOLE account). Top: only the graded cohort.
+        whole = len(bots) + len(real_results)
+        denom = whole if settings.selection != "top" else len(real_results)
+        points = sum(config.TIER_POINTS.get(s.get("tier", "D"), 0) for s in real_results)
+        agg["account_score"] = round(min(100.0, points / max(1, denom) * 10), 1)
+        agg["audience_score"] = agg["account_score"]   # headline gauge uses this
+        agg["star_a"] = sum(1 for s in real_results if s.get("tier") == "A")
+        agg["star_b"] = sum(1 for s in real_results if s.get("tier") == "B")
+        agg["high_value_pct"] = round(
+            (agg["star_a"] + agg["star_b"]) / max(1, len(real_results)) * 100, 1
+        )
+        agg["score_basis"] = (
+            "top cohort (tier-weighted)" if settings.selection == "top"
+            else "whole account (tier-weighted)"
+        )
+        # Bell-curve percentile vs all previously-graded accounts.
+        population = [a["account_score"] for a in db.leaderboard()]
+        agg["bell_percentile"] = bell_percentile(agg["account_score"], population)
 
         # Project the bot rate + real-audience mix across the WHOLE account.
         real_n = len(real_results) or 1
@@ -288,10 +346,14 @@ async def run_analysis(jid: str, raw_input: str, niche: str, settings: config.Se
 
 
 PERSON_NOTE = (
-    "You have this person's actual profile (bio, location, activity counts, account "
-    "age), their recent tweets, and web research — grade all five criteria from this "
-    "real evidence. Niche Relevance and Activity should come mostly from the bio and "
-    "recent tweets; Real-World Influence and Authority from the research and bio."
+    "You have this person's actual profile (bio, location, links, activity counts, "
+    "account age), their recent tweets, and web research. Grade all five criteria "
+    "from this real evidence. Niche Relevance and Activity come mostly from the bio "
+    "and recent tweets. For Real-World Influence and Authority, use the web research; "
+    "if research is thin but the bio/tweets clearly show a notable role (e.g. founder/"
+    "CEO of a real company, investor, recognized expert), credit it — do NOT score "
+    "influence near zero just because web search was limited. Lower confidence when "
+    "relying on self-reported info."
 )
 
 
@@ -326,7 +388,7 @@ async def analyze_person(raw_input: str, niche: str) -> dict:
         follower = {"screen_name": handle, "name": handle}
 
     # 2. Enrich with web research (real-world influence/authority), then grade.
-    web_ctx, _ = await scorer.research_person(follower)
+    web_ctx, _ = await scorer.research_person(follower, max_uses=config.PERSON_SEARCH_MAX_USES)
     score = await scorer.score_one(follower, web_context=web_ctx, note=PERSON_NOTE)
     if score is None:
         raise RuntimeError("Scoring failed — please try again.")

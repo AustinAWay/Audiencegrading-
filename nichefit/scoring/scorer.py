@@ -51,6 +51,21 @@ def _extract_json(text: str) -> dict | None:
     return found
 
 
+def _extract_json_array(text: str) -> list | None:
+    """Return the last JSON array in the text (the model may reason first)."""
+    decoder = json.JSONDecoder()
+    found: list | None = None
+    for i, ch in enumerate(text):
+        if ch == "[":
+            try:
+                obj, _ = decoder.raw_decode(text[i:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, list):
+                found = obj
+    return found
+
+
 def _coerce_and_validate(raw: dict, f: dict) -> dict:
     """Clamp each criterion to its band, then recompute total + tier authoritatively.
 
@@ -83,12 +98,13 @@ def _coerce_and_validate(raw: dict, f: dict) -> dict:
 # Free bot / junk pre-filter (no LLM, no web research)
 # --------------------------------------------------------------------------- #
 def is_junk(f: dict) -> bool:
-    """Deterministically flag an obvious bot / empty / spam account.
+    """Flag an account we can't profile-grade: empty bio + ~no posts, or spam.
 
-    Deliberately conservative: verified accounts are never flagged, and a real
-    account is only flagged when it has no bio AND almost no activity, or shows an
-    explicit spam signature. This is bot *detection*, not influence scoring — it
-    is the one place follower-adjacent activity signals are used.
+    These are usually dormant/lurker or fake accounts — NOT necessarily bots.
+    Deliberately conservative: a real, gradeable, or potentially-influential
+    account is never flagged. Exemptions: verified accounts, and any account with
+    meaningful reach (>= BOT_REACH_EXEMPTION followers) — a silent/blank but
+    high-reach follower is likely a real person worth researching.
     """
     if f.get("verified"):
         return False
@@ -96,19 +112,26 @@ def is_junk(f: dict) -> bool:
     name = f.get("name") or ""
     tweet = (f.get("status") or {}).get("full_text") or ""
     text = f"{bio} {name} {tweet}".lower()
+    # Explicit spam is always junk, regardless of reach.
     if any(p in text for p in config.BOT_SPAM_PHRASES):
         return True
+    # A blank/silent but high-reach account is likely a real (influential) lurker.
+    if (f.get("followers_count", 0) or 0) >= config.BOT_REACH_EXEMPTION:
+        return False
     statuses = f.get("statuses_count", 0) or 0
     has_tweet = bool((f.get("status") or {}).get("full_text"))
-    # Empty bio and essentially no activity -> treat as bot / dormant.
+    # No bio and essentially no posts -> nothing to grade from the profile.
     return not bio and statuses < config.BOT_MIN_STATUSES and not has_tweet
 
 
 def junk_score(f: dict) -> dict:
-    """A free 'fake' score for a flagged account — tier D, no spend."""
+    """A free tier-D score for an inactive / unverifiable account — no spend."""
     out = _coerce_and_validate(dict.fromkeys(_CRITERIA_KEYS, 0), f)
-    out["confidence"] = 0.9
-    out["reasoning"] = "Flagged by the pre-filter as a bot / inactive / spam account (no LLM call)."
+    out["confidence"] = 0.8
+    out["reasoning"] = (
+        "Inactive / no-profile account (no bio or posts to grade) — flagged for free, "
+        "not deeply analyzed. May still be a real person."
+    )
     out["bot"] = True
     return out
 
@@ -229,6 +252,51 @@ class Scorer:
                     await asyncio.sleep(min(8.0, 0.8 * (2 ** attempt)))
             return None  # skip this follower after N failures
 
+    async def score_batch(self, followers: list[dict]) -> list[dict | None]:
+        """Grade many followers in ONE call (no web research) — cheap whole-account grading.
+
+        Returns a list aligned to `followers`; an entry is None if the model
+        didn't return a usable score for that follower.
+        """
+        if not followers:
+            return []
+        if self.client is None:
+            return [heuristic_score(f, self.niche) for f in followers]
+
+        system = prompts.system_prompt(self.niche)
+        user = prompts.batch_prompt(followers)
+        async with self.sem:
+            for attempt in range(config.MAX_RETRIES_PER_FOLLOWER):
+                try:
+                    msg = await self.client.messages.create(
+                        model=config.HAIKU_MODEL,
+                        max_tokens=min(8000, 200 + 120 * len(followers)),
+                        temperature=config.SCORER_TEMPERATURE,
+                        system=system,
+                        messages=[{"role": "user", "content": user}],
+                    )
+                    if msg.usage:
+                        self.input_tokens += msg.usage.input_tokens
+                        self.output_tokens += msg.usage.output_tokens
+                    text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+                    arr = _extract_json_array(text)
+                    if not arr:
+                        continue
+                    by_sn = {
+                        str(o.get("screen_name", "")).lower(): o
+                        for o in arr if isinstance(o, dict)
+                    }
+                    out: list[dict | None] = []
+                    for i, f in enumerate(followers):
+                        raw = by_sn.get((f.get("screen_name") or "").lower())
+                        if raw is None and i < len(arr) and isinstance(arr[i], dict):
+                            raw = arr[i]  # fall back to positional match
+                        out.append(_coerce_and_validate(raw, f) if isinstance(raw, dict) else None)
+                    return out
+                except Exception:
+                    await asyncio.sleep(min(8.0, 0.8 * (2 ** attempt)))
+            return [None] * len(followers)
+
     @property
     def spend_usd(self) -> float:
         return (
@@ -236,35 +304,45 @@ class Scorer:
             + self.output_tokens / 1_000_000 * config.HAIKU_OUTPUT_PRICE_PER_MTOK
         )
 
-    async def research_person(self, f: dict) -> tuple[str | None, bool]:
+    async def research_person(
+        self, f: dict, max_uses: int | None = None
+    ) -> tuple[str | None, bool]:
         """Web research on who a follower actually is.
 
         Returns (summary_text, identified). `identified` is False when the model
-        could not confidently find the specific person — callers should treat that
-        as "not found" rather than scoring them. Returns (None, False) in mock mode
-        or if the web_search tool errors / isn't available on the account.
+        could not confidently find the specific person. Returns (None, False) in
+        mock mode or if the web_search tool errors / isn't available.
         """
         if self.client is None:
             return None, False
         name = f.get("name") or f.get("screen_name")
+        bio = f.get("description", "")
+        link = f.get("url", "")
         try:
             msg = await self.client.messages.create(
                 model=config.HAIKU_MODEL,
-                max_tokens=320,
+                max_tokens=380,
                 tools=[{"type": "web_search_20250305", "name": "web_search",
-                        "max_uses": config.WEB_SEARCH_MAX_USES}],
+                        "max_uses": max_uses or config.WEB_SEARCH_MAX_USES}],
                 messages=[{
                     "role": "user",
                     "content": (
-                        f"Research who this X (Twitter) user is and what they post about. "
-                        f"Handle: @{f.get('screen_name')}. Name: {name}. "
-                        f"Bio: \"{f.get('description','')}\". Search the web. In 2-4 sentences "
-                        "summarize their real-world influence/authority (founder/executive roles "
-                        "and company size, investments, wealth, public prominence, recognized "
-                        "expertise) and the themes of their recent posts.\n"
-                        "Then, on a FINAL separate line, output exactly 'FOUND: yes' if you could "
-                        "confidently identify this specific person/account, or 'FOUND: no' if you "
-                        "could not."
+                        "Identify and research this specific X (Twitter) user. Run several web "
+                        "searches from different angles before concluding — do not give up after "
+                        "one. Even if the bio is blank, the display NAME is often enough to find "
+                        "them. Try, as needed:\n"
+                        f"- their display name \"{name}\" (alone, and with words from the bio)\n"
+                        f"- \"{name}\" + LinkedIn / founder / CEO / company\n"
+                        f"- the @handle and x.com/{f.get('screen_name')}\n"
+                        f"- any company / role / link from the bio: \"{bio}\" {link}\n\n"
+                        "In 2-4 sentences summarize their real-world influence/authority "
+                        "(founder/executive roles and company size, investments, wealth, public "
+                        "prominence, recognized expertise) and what they're known for. If web "
+                        "results are thin, still use clear evidence from the bio/link (e.g. a "
+                        "stated 'Founder/CEO of X') — note it's self-reported.\n"
+                        "Then, on a FINAL separate line, output exactly 'FOUND: yes' if you "
+                        "identified the person (via the web OR a clear bio), or 'FOUND: no' "
+                        "only if you truly have nothing to go on."
                     ),
                 }],
             )

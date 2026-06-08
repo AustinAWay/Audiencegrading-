@@ -152,6 +152,31 @@ would need fine-tuning before relying on scores:
 
 ---
 
+## Data persistence — push your runs
+
+Every audience run is saved to a local SQLite database, **`nichefit.db`**, which
+holds the cached followers/scores, the past-runs history, and the **leaderboard +
+bell-curve** data. Unlike most projects, this file **is committed to the repo on
+purpose** so that data survives across machines and instances.
+
+**After making runs, commit and push them** so the leaderboard / bell curve stays
+consistent everywhere:
+
+```bash
+git add nichefit.db && git commit -m "data: new runs" && git push
+```
+
+Notes:
+- The bell-curve percentile **adapts** as more accounts are graded — it starts
+  from an assumed distribution and shifts toward the real mean/std of your data
+  (the assumption is a prior worth `BELL_PRIOR_STRENGTH` accounts, in `config.py`).
+- It's a **single-writer binary file**: don't have two instances writing and
+  pushing at once, or git will conflict on it.
+- If it grows large or you want a clean slate, use **History → Clear all data**
+  (or `POST /api/clear`), then commit the emptied DB.
+
+---
+
 ## Project layout
 
 ```
